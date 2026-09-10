@@ -89,14 +89,14 @@ def test_m16a_owner_rls_immutable_replay_and_atomic_protein_approval() -> None:
             """INSERT INTO health_body_mass_sample
                (id,user_id,hk_sample_uuid,value_kg,sample_start,sample_end)
                VALUES (%s,%s,%s,%s,%s,%s)""",
-            (uuid4(), user, sample_id, "67.495", now, now),
+            (uuid4(), user, sample_id, "72.0", now, now),
         )
 
     proposal = build_protein_target_proposal(
         proposal_id=uuid4(),
         user_id=user,
         prior_target=target,
-        body_mass=BodyMassObservation(sample_id, Decimal("67.495"), now),
+        body_mass=BodyMassObservation(sample_id, Decimal("72.0"), now),
         generated_at=now,
         policy=OWNER_PROTEIN_TARGET_POLICY_V1,
     )

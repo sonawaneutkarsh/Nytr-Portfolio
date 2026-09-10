@@ -1,7 +1,16 @@
 # Nytr
 
-Nytr is an evidence-driven nutrition and training companion that turns messy
-health, food, dining, and workout inputs into transparent daily decisions.
+**An evidence-driven iOS nutrition and training companion that turns real health, food, and workout data into deterministic daily guidance.**
+
+Nytr combines Apple Health body measurements, Hevy training history, dining and
+food nutrition data, barcode food entry, weight-trend analysis, and deterministic
+coaching to answer practical questions such as what to eat next, whether
+nutrition targets need adjustment, and how training performance is progressing.
+
+Unlike a generic AI fitness app, Nytr keeps factual data and calculations
+authoritative. AI is optional and downstream: it can explain evidence, but it
+cannot invent meals, modify health records, change targets, or override
+deterministic decisions.
 
 ## The problem
 
@@ -12,14 +21,16 @@ targets or records consumption.
 
 ## Key features
 
-- Deterministic calorie/protein targets, target review, and body-weight trends.
-- Body & Goals setup for HealthKit weight, height, optional target weight, and
-  timestamped owner-measured waist evidence.
-- Native SwiftUI HealthKit sync for body mass and workouts.
-- Official Hevy workout detail with source-authority-preserving coaching.
-- Exact barcode food provenance with explicit review before import.
-- Provider-bounded dining menu/nutrition ingestion with fail-closed parsing.
-- Optional Nytr Review: structured, privacy-minimized Gemini explanation only.
+- SwiftUI iOS client with native HealthKit integration.
+- Python/FastAPI backend backed by PostgreSQL/Supabase.
+- Hevy training integration with source-authoritative workout detail.
+- Barcode food entry through Open Food Facts with explicit provenance.
+- Automated dining-data ingestion using provider-bounded, fail-closed parsing.
+- Deterministic calorie/protein target review and weight/progress tracking.
+- Deterministic progressive-overload coaching for supported training evidence.
+- Optional evidence-grounded AI review that explains, but never authors, facts.
+- Fail-closed evidence model with explicit user approval for target-changing
+  recommendations.
 
 ## Architecture and authority model
 
@@ -54,13 +65,20 @@ changes calories, or switches a gain/maintain/lose phase automatically.
 
 ## Screenshots
 
-Screenshots can be added here after a privacy-reviewed device capture:
+<table>
+<tr>
+<td align="center"><strong>Today</strong></td>
+<td align="center"><strong>Progress</strong></td>
+<td align="center"><strong>Training</strong></td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/today.png" width="250"></td>
+<td><img src="docs/screenshots/progress.png" width="250"></td>
+<td><img src="docs/screenshots/training.png" width="250"></td>
+</tr>
+</table>
 
-- `docs/screenshots/today.png`
-- `docs/screenshots/body-and-goals.png`
-- `docs/screenshots/training.png`
-
-No personal screenshots or production exports are included in this mirror.
+Real Nytr iOS interface shown with privacy-sanitized values.
 
 ## Local setup
 
@@ -89,9 +107,9 @@ in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 ## Project status
 
 Nytr is production-released and engineering-complete. Feature development is
-frozen; physical-device demo validation, privacy-reviewed screenshots, demo
-capture, and résumé/portfolio presentation remain deferred. This sanitized
-mirror intentionally excludes production data and deployment configuration.
+frozen; physical-device demo validation, demo capture, and résumé/portfolio
+presentation remain deferred. This sanitized mirror intentionally excludes
+production data and deployment configuration.
 
 See [the public architecture notes](docs/ARCHITECTURE.md),
 [security guidance](SECURITY.md), and [the roadmap](docs/ROADMAP.md).
