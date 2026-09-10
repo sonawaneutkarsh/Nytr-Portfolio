@@ -1,0 +1,85 @@
+name: NutritionHealthCompanion
+options:
+  bundleIdPrefix: com.nutritionagent
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    CODE_SIGN_STYLE: Automatic
+targets:
+  NutritionHealthCompanion:
+    type: application
+    platform: iOS
+    # Non-secret runtime configuration (BACKEND_BASE_URL, SUPABASE_URL,
+    # SUPABASE_ANON_KEY). Info.plist references $(VAR) so these values are
+    # substituted at build time; local overrides go to Config.local.xcconfig.
+    configFiles:
+      Debug: Config.xcconfig
+      Release: Config.xcconfig
+    sources:
+      - path: ../App
+      - path: ../Features
+      - path: ../HealthKit
+      - path: ../Sync
+      - path: ../Networking
+      - path: ../Auth
+      - path: ../Support
+        excludes:
+          - "**/*_Tests.swift"
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Nytr
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Editor
+            CFBundleURLName: com.nutritionagent.healthcompanion.auth
+            CFBundleURLSchemes:
+              - nutritionhealthcompanion
+        UILaunchScreen: {}
+        NSHealthShareUsageDescription: >-
+          This app reads your body weight, workout sessions, and workout energy
+          when available from Apple Health to synchronize them with your personal
+          nutrition system. Raw HealthKit samples are uploaded only to your configured
+          backend over HTTPS and are never sent to the optional AI provider.
+        NSCameraUsageDescription: >-
+          Nytr uses the camera only to read a packaged-food barcode. Images are
+          not stored or uploaded.
+        # Substituted at build time from Config.xcconfig (base configuration).
+        # CompanionApp reads these keys via Bundle.main. Non-secret values only:
+        # the anon key is public by design; NEVER place a service-role key here.
+        BACKEND_BASE_URL: $(BACKEND_BASE_URL)
+        SUPABASE_URL: $(SUPABASE_URL)
+        SUPABASE_ANON_KEY: $(SUPABASE_ANON_KEY)
+    entitlements:
+      path: NutritionHealthCompanion.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nutritionagent.healthcompanion
+        TARGETED_DEVICE_FAMILY: "1"   # iPhone-only; HealthKit unavailable on iPad builds we target
+        INFOPLIST_KEY_CFBundleDisplayName: Nytr
+  HealthSyncTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ../HealthSyncTests
+    dependencies:
+      - target: NutritionHealthCompanion
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  NutritionHealthCompanion:
+    build:
+      targets:
+        NutritionHealthCompanion: all
+        HealthSyncTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - HealthSyncTests

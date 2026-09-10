@@ -1,0 +1,43 @@
+{
+  "_meta": {
+    "fixture": "../daily_menu_lunch_2026-08-21.html",
+    "note": "Expected parser contract for a fabricated menu page. No institutional source content is bundled."
+  },
+  "menu_day": {
+    "date": "2026-08-21",
+    "campus_id": 50,
+    "campus_name": "Demo dining",
+    "meal_period": "Lunch"
+  },
+  "categories": [
+    { "position": 1, "name": "SYNTHETIC ENTREES", "items": [
+      { "name_raw": "Demo Entree 01", "mid_instance": "900000001", "dietary_tags": [] },
+      { "name_raw": "Demo Entree 01", "mid_instance": "900000002", "dietary_tags": [] },
+      { "name_raw": "Demo Entree 03", "mid_instance": "900000003", "dietary_tags": [] },
+      { "name_raw": "Demo Entree 04", "mid_instance": "900000004", "dietary_tags": [] },
+      { "name_raw": "Demo Entree 05", "mid_instance": "900000005", "dietary_tags": [] },
+      { "name_raw": "Demo Entree 06", "mid_instance": "900000006", "dietary_tags": [] },
+      { "name_raw": "Demo Entree 07", "mid_instance": "900000007", "dietary_tags": [] },
+      { "name_raw": "Demo Entree 08", "mid_instance": "900000008", "dietary_tags": [] },
+      { "name_raw": "Demo Entree 09", "mid_instance": "900000009", "dietary_tags": [] },
+      { "name_raw": "Demo Entree 10", "mid_instance": "900000010", "dietary_tags": [] },
+      { "name_raw": "Demo Entree 11", "mid_instance": "900000011", "dietary_tags": [] }
+    ]},
+    { "position": 2, "name": "SYNTHETIC SIDES", "items": [
+      { "name_raw": "Demo Side 01", "mid_instance": "900000012", "dietary_tags": [] },
+      { "name_raw": "Demo Side 02", "mid_instance": "900000013", "dietary_tags": [] },
+      { "name_raw": "Demo Side 03", "mid_instance": "900000014", "dietary_tags": [] },
+      { "name_raw": "Demo Side 04", "mid_instance": "900000015", "dietary_tags": [] },
+      { "name_raw": "Demo Side 05", "mid_instance": "900000016", "dietary_tags": [] },
+      { "name_raw": "Demo Side 06", "mid_instance": "900000017", "dietary_tags": [] },
+      { "name_raw": "Demo Side 07", "mid_instance": "900000018", "dietary_tags": [] },
+      { "name_raw": "Demo Side 08", "mid_instance": "900000019", "dietary_tags": [] },
+      { "name_raw": "Demo Side 09", "mid_instance": "900000020", "dietary_tags": [] },
+      { "name_raw": "Demo Side 10", "mid_instance": "900000021", "dietary_tags": [] },
+      { "name_raw": "Demo Side 11", "mid_instance": "900000022", "dietary_tags": [] }
+    ]}
+  ],
+  "item_count": 22,
+  "label_url_template": "nutrition-label.cfm?mid={mid_instance}",
+  "provenance_required_fields": ["source_url", "fetched_at", "http_status", "content_hash", "parser_version", "ingestion_run_id", "raw_snapshot_ref"]
+}

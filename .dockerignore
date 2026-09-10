@@ -1,0 +1,19 @@
+# Keep the production build context minimal; nothing outside backend/ is
+# needed by the API image.
+.git
+.venv
+backend/.venv
+backend/tests
+backend/snapshots
+backend/migrations
+ios
+docs
+tests
+.commandcode
+.opencode
+.mypy_cache
+.pytest_cache
+.ruff_cache
+**/__pycache__
+**/*.py[cod]
+.DS_Store

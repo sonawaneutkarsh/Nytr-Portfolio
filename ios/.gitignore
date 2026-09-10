@@ -1,0 +1,5 @@
+# Generated Xcode project (source of truth: Project/project.yml)
+NutritionHealthCompanion.xcodeproj/
+xcuserdata/
+Config.local.xcconfig
+*.xcuserstate

@@ -1,0 +1,30 @@
+
+# macOS metadata
+.DS_Store
+
+# Local secrets/configuration
+.env
+.env.*
+!.env.example
+
+# iOS developer-only settings
+ios/NutritionHealthCompanion/Project/Config.local.xcconfig
+
+# OpenCode local state
+.opencode/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+
+# Runtime raw source snapshots (never commit fetched content)
+snapshots/
+
+# CommandCode local state
+.commandcode/

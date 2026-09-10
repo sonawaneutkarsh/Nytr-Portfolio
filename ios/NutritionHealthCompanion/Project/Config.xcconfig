@@ -1,0 +1,12 @@
+// BACKEND_BASE_URL and Supabase project coordinates for the M5 companion.
+// Non-secret values only: the Supabase anon key is public by design.
+// NEVER place a service-role key or any private credential in this file.
+//
+// Local overrides go in Config.local.xcconfig (gitignored).
+
+BACKEND_BASE_URL = https://your-backend-host.example.com
+SUPABASE_URL = https://your-project.supabase.co
+SUPABASE_ANON_KEY = your-anon-key-here
+
+// Optional local overrides (gitignored). Values here win over the ones above.
+#include? "Config.local.xcconfig"

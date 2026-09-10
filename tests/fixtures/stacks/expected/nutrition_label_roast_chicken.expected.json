@@ -1,0 +1,29 @@
+{
+  "_meta": {
+    "fixture": "../nutrition_label_standard_roast_chicken.html",
+    "note": "Expected parser contract for a fabricated complete label."
+  },
+  "item_name_raw": "Demo Protein Plate",
+  "serving_basis_raw": "1 SERVG",
+  "nutrients": {
+    "calories_kcal": 600,
+    "total_fat_g": 20,
+    "saturated_fat_g": 5,
+    "trans_fat_g": 0,
+    "cholesterol_mg": 100,
+    "sodium_mg": 900,
+    "vitamin_d_mcg": 2,
+    "calcium_mg": 100,
+    "carbohydrate_g": 50,
+    "fiber_g": 6,
+    "sugars_g": 8,
+    "added_sugars_g": 2,
+    "protein_g": 40,
+    "iron_mg": 4,
+    "potassium_mg": 700
+  },
+  "allergens": [],
+  "ingredients_raw": "Demo grain, beans, vegetables.",
+  "confidence": "official_published",
+  "provenance_required_fields": ["source_url", "fetched_at", "http_status", "content_hash", "parser_version", "ingestion_run_id", "raw_snapshot_ref", "serving_basis_raw", "confidence"]
+}

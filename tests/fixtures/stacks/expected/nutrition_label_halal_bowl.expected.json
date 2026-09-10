@@ -1,0 +1,18 @@
+{
+  "_meta": {
+    "fixture": "../nutrition_label_placeholder_halal_bowl.html",
+    "note": "Expected parser contract for a fabricated placeholder label. Zero values and PLACE HOLDER are unavailable, not nutrition facts."
+  },
+  "item_name_raw": "Demo Placeholder Bowl",
+  "serving_basis_raw": "1 SERVG",
+  "placeholder_detection": {
+    "is_placeholder_label": true,
+    "required_disposition": "quarantine_as_partial"
+  },
+  "nutrients": null,
+  "unavailable_fields": ["calories_kcal", "total_fat_g", "saturated_fat_g", "trans_fat_g", "cholesterol_mg", "sodium_mg", "vitamin_d_mcg", "calcium_mg", "carbohydrate_g", "fiber_g", "sugars_g", "added_sugars_g", "protein_g", "iron_mg", "potassium_mg"],
+  "ingredients_raw": "PLACE HOLDER",
+  "allergens": [],
+  "confidence": "partial",
+  "provenance_required_fields": ["source_url", "fetched_at", "http_status", "content_hash", "parser_version", "ingestion_run_id", "raw_snapshot_ref", "serving_basis_raw", "confidence"]
+}

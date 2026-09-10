@@ -1,0 +1,37 @@
+{
+  "page": 2,
+  "page_count": 2,
+  "events": [
+    {
+      "type": "updated",
+      "workout": {
+        "id": "fixture-workout-lower-1",
+        "title": "Lower Day",
+        "routine_id": null,
+        "description": null,
+        "start_time": "2026-09-01T13:00:00-04:00",
+        "end_time": "2026-09-01T14:00:00-04:00",
+        "created_at": "2026-09-01T14:00:10-04:00",
+        "updated_at": "2026-09-01T14:01:00-04:00",
+        "exercises": [
+          {
+            "index": 0,
+            "title": "Walking Lunge",
+            "notes": "Load intentionally unavailable",
+            "exercise_template_id": "fixture-lunge-template",
+            "superset_id": null,
+            "sets": [
+              {"index": 0, "type": "normal", "weight_kg": null, "reps": 12, "distance_meters": 20.5, "duration_seconds": null, "rpe": null, "custom_metric": null},
+              {"index": 1, "type": "normal", "weight_kg": null, "reps": null, "distance_meters": null, "duration_seconds": null, "rpe": null, "custom_metric": 30}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "deleted",
+      "id": "fixture-workout-deleted-1",
+      "deleted_at": "2026-09-02T16:00:00Z"
+    }
+  ]
+}
