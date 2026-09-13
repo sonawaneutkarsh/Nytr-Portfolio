@@ -58,6 +58,7 @@ targets:
         com.apple.developer.healthkit: true
     settings:
       base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         PRODUCT_BUNDLE_IDENTIFIER: com.nutritionagent.healthcompanion
         TARGETED_DEVICE_FAMILY: "1"   # iPhone-only; HealthKit unavailable on iPad builds we target
         INFOPLIST_KEY_CFBundleDisplayName: Nytr

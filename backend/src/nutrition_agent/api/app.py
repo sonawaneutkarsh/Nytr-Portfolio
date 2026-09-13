@@ -36,7 +36,13 @@ from nutrition_agent.application.barcode_foods import (
     ImportBarcodeFoodUseCase,
     LookupBarcodeFoodUseCase,
 )
-from nutrition_agent.application.body_goals import BodyGoalsUseCase
+from nutrition_agent.application.body_goals import (
+    AddWaistMeasurementUseCase,
+    CreateStartingCalorieProposalUseCase,
+    DecideStartingCalorieProposalUseCase,
+    GetBodyGoalsUseCase,
+    SaveBodyGoalProfileUseCase,
+)
 from nutrition_agent.application.body_mass_trend import BodyMassTrendUseCase
 from nutrition_agent.application.consumption import (
     ListConsumptionForRunUseCase,
@@ -54,6 +60,7 @@ from nutrition_agent.application.health_sync import (
 )
 from nutrition_agent.application.hevy_sync import SyncHevyDetailedTrainingUseCase
 from nutrition_agent.application.manual_foods import (
+    AdjustManualFoodUseCase,
     CreateCustomFoodUseCase,
     ListCustomFoodsUseCase,
     RecordManualFoodUseCase,
@@ -66,6 +73,7 @@ from nutrition_agent.application.next_meal_consumption import (
 from nutrition_agent.application.nutrition_history import GetNutritionHistory7DayUseCase
 from nutrition_agent.application.ports import (
     BarcodeProductProvider,
+    BodyGoalsRepository,
     BodyMassHistoryRepository,
     ConsumptionRepository,
     DailyNutritionLedgerRepository,
@@ -162,8 +170,8 @@ class HealthApiDeps:
         training_analytics_index: GetExerciseIndexUseCase | None = None,
         training_analytics_history: GetExerciseTrainingHistoryUseCase | None = None,
         ai_review_use_case: GenerateAIReviewUseCase | None = None,
-        body_goals_use_case: BodyGoalsUseCase | None = None,
         barcode_product_provider: BarcodeProductProvider | None = None,
+        body_mass_repository: HealthBodyMassRepository | None = None,
     ) -> None:
         self.settings = settings
         self.verifier = verifier
@@ -178,8 +186,8 @@ class HealthApiDeps:
         self.training_analytics_index = training_analytics_index
         self.training_analytics_history = training_analytics_history
         self.ai_review_use_case = ai_review_use_case
-        self.body_goals_use_case = body_goals_use_case
         self.barcode_product_provider = barcode_product_provider
+        self.body_mass_repository = body_mass_repository
 
 
 class _PlanningStorageNotConfigured(RuntimeError):
@@ -423,6 +431,9 @@ def create_health_app(
 
     if deps is not None:
         settings, verifier, use_case = deps.settings, deps.verifier, deps.use_case
+        repo: HealthBodyMassRepository = (
+            deps.body_mass_repository or InMemoryHealthBodyMassRepository()
+        )
         trend_use_case = deps.trend_use_case or BodyMassTrendUseCase(
             _FailClosedBodyMassHistoryRepository()
         )
@@ -435,7 +446,6 @@ def create_health_app(
         training_analytics_index = deps.training_analytics_index
         training_analytics_history = deps.training_analytics_history
         ai_review_use_case = deps.ai_review_use_case
-        body_goals_use_case = deps.body_goals_use_case
         barcode_product_provider = deps.barcode_product_provider
         body_mass_history_repo: BodyMassHistoryRepository = _FailClosedBodyMassHistoryRepository()
     else:
@@ -443,16 +453,11 @@ def create_health_app(
         verifier = TokenVerifier(settings)
         if database_url is None:
             database_url = settings.database_url
-        repo: HealthBodyMassRepository
         if database_url is not None:
             from nutrition_agent.db.sql_repos import (
-                SqlBodyProfileRepository,
                 SqlDetailedTrainingRepository,
-                SqlGoalPolicyRepository,
                 SqlHealthBodyMassRepository,
-                SqlTargetPolicyRepository,
                 SqlTrainingSessionRepository,
-                SqlWaistMeasurementRepository,
             )
 
             repo = SqlHealthBodyMassRepository(database_url)
@@ -477,15 +482,6 @@ def create_health_app(
             training_analytics_recent = GetRecentTrainingAnalyticsUseCase(detail_repository)
             training_analytics_index = GetExerciseIndexUseCase(detail_repository)
             training_analytics_history = GetExerciseTrainingHistoryUseCase(detail_repository)
-            body_goals_use_case = BodyGoalsUseCase(
-                profiles=SqlBodyProfileRepository(database_url),
-                waists=SqlWaistMeasurementRepository(database_url),
-                body_mass=body_mass_history_repo,
-                goals=SqlGoalPolicyRepository(database_url),
-                targets=SqlTargetPolicyRepository(database_url),
-                clock=clock,
-                ids=ids,
-            )
         else:
             repo = InMemoryHealthBodyMassRepository()
             body_mass_history_repo = _FailClosedBodyMassHistoryRepository()
@@ -498,7 +494,6 @@ def create_health_app(
             training_analytics_recent = None
             training_analytics_index = None
             training_analytics_history = None
-            body_goals_use_case = None
         use_case = HealthBodyMassSyncUseCase(HealthSyncDeps(repository=repo, clock=clock))
         ai_review_use_case = None
         if settings.open_food_facts_user_agent is not None:
@@ -519,7 +514,6 @@ def create_health_app(
     app.state.training_analytics_recent = training_analytics_recent
     app.state.training_analytics_index = training_analytics_index
     app.state.training_analytics_history = training_analytics_history
-    app.state.body_goals_use_case = body_goals_use_case
 
     # M6 planning deps (ADR-019): SQL repositories when a database is
     # configured; otherwise FAIL CLOSED — durable storage is mandatory for
@@ -538,8 +532,10 @@ def create_health_app(
     protein_proposal_repo: ProteinTargetProposalRepository
     next_meal_repo: NextMealRecommendationRepository
     next_meal_consumption_repo: NextMealConsumptionRepository
+    body_goals_repo: BodyGoalsRepository | None
     if database_url is not None:
         from nutrition_agent.db.sql_repos import (
+            SqlBodyGoalsRepository,
             SqlConsumptionRepository,
             SqlCustomFoodRepository,
             SqlGoalPolicyRepository,
@@ -568,6 +564,7 @@ def create_health_app(
         protein_proposal_repo = SqlProteinTargetProposalRepository(database_url)
         next_meal_repo = SqlNextMealRecommendationRepository(database_url)
         next_meal_consumption_repo = SqlNextMealConsumptionRepository(database_url)
+        body_goals_repo = SqlBodyGoalsRepository(database_url)
     else:
         plan_runs = _FailClosedPlanRunRepository()
         target_repo = _FailClosedTargetPolicyRepository()
@@ -581,6 +578,7 @@ def create_health_app(
         protein_proposal_repo = _FailClosedProteinProposalRepository()
         next_meal_repo = _FailClosedNextMealRepository()
         next_meal_consumption_repo = _FailClosedNextMealConsumptionRepository()
+        body_goals_repo = None
     base_inputs_provider = DefaultServerInputsProvider(
         menu_days=menu_days,
         configuration=PRODUCTION_SERVER_CONFIGURATION,
@@ -635,6 +633,11 @@ def create_health_app(
     )
     app.state.record_manual_food_use_case = (
         RecordManualFoodUseCase(custom_food_repo, clock, ids)
+        if custom_food_repo is not None
+        else None
+    )
+    app.state.adjust_manual_food_use_case = (
+        AdjustManualFoodUseCase(custom_food_repo, clock, ids)
         if custom_food_repo is not None
         else None
     )
@@ -710,6 +713,41 @@ def create_health_app(
     app.state.next_meal_consumption_get_use_case = GetNextMealConsumptionUseCase(
         next_meal_consumption_repo
     )
+    app.state.body_goals_repository = body_goals_repo
+    app.state.body_goals_get_use_case = (
+        GetBodyGoalsUseCase(
+            repository=body_goals_repo,
+            health=repo,
+            trends=trend_use_case,
+            goals=goal_repo,
+            targets=target_repo,
+        )
+        if body_goals_repo is not None
+        else None
+    )
+    app.state.body_goals_save_profile_use_case = (
+        SaveBodyGoalProfileUseCase(body_goals_repo, clock, ids) if body_goals_repo else None
+    )
+    app.state.body_goals_add_waist_use_case = (
+        AddWaistMeasurementUseCase(body_goals_repo, clock, ids) if body_goals_repo else None
+    )
+    app.state.body_goals_create_proposal_use_case = (
+        CreateStartingCalorieProposalUseCase(
+            repository=body_goals_repo,
+            health=repo,
+            goals=goal_repo,
+            targets=target_repo,
+            clock=clock,
+            ids=ids,
+        )
+        if body_goals_repo
+        else None
+    )
+    app.state.body_goals_decide_proposal_use_case = (
+        DecideStartingCalorieProposalUseCase(body_goals_repo, target_repo, clock, ids)
+        if body_goals_repo
+        else None
+    )
     if ai_review_use_case is None:
         from nutrition_agent.infrastructure.gemini_ai_review import GeminiAIReviewProvider
 
@@ -720,6 +758,7 @@ def create_health_app(
             provider=GeminiAIReviewProvider(
                 settings.gemini_api_key,
                 model=settings.gemini_model,
+                enabled=settings.gemini_ai_review_enabled,
             ),
         )
     app.state.ai_review_use_case = ai_review_use_case

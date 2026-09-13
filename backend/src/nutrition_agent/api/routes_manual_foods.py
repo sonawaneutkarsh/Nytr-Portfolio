@@ -12,12 +12,14 @@ from pydantic import BaseModel, ConfigDict
 
 from nutrition_agent.api.routes_planning import VerifierDep, _authenticated_subject, _error
 from nutrition_agent.application.manual_foods import (
+    AdjustManualFoodUseCase,
     CreateCustomFoodUseCase,
     ListCustomFoodsUseCase,
     RecordManualFoodUseCase,
 )
 from nutrition_agent.application.ports import DuplicateManualFoodError
 from nutrition_agent.domain.nutrition.custom_foods import (
+    AdjustManualFoodOutcome,
     CustomFoodVersion,
     ManualFoodConsumptionEntry,
     ManualMealPeriod,
@@ -54,6 +56,21 @@ class ManualConsumptionRequest(BaseModel):
     consumed_amount: str
     consumed_unit: str
     meal_period: ManualMealPeriod
+    client_event_id: UUID
+
+
+class ManualCorrectionPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    amount: str
+    unit: str
+
+
+class ManualCorrectionRequest(ManualCorrectionPreviewRequest):
+    client_event_id: UUID
+
+
+class ManualVoidRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     client_event_id: UUID
 
 
@@ -115,6 +132,7 @@ def _provenance_content(value: object) -> dict[str, object | None]:
         "payload_sha256": value.payload_sha256,
         "data_license": value.data_license,
         "nutrition_basis": value.nutrition_basis,
+        "serving_authority": value.serving_authority,
     }
 
 
@@ -137,6 +155,24 @@ def _entry_content(value: ManualFoodConsumptionEntry) -> dict[str, object]:
     }
 
 
+def _adjustment_content(value: AdjustManualFoodOutcome) -> dict[str, object]:
+    adjustment = value.adjustment
+    return {
+        "adjustment_id": str(adjustment.adjustment_id),
+        "client_event_id": str(adjustment.client_event_id),
+        "superseded_entry_id": str(adjustment.superseded_entry_id),
+        "replacement_entry_id": (
+            str(adjustment.replacement_entry_id)
+            if adjustment.replacement_entry_id is not None
+            else None
+        ),
+        "kind": adjustment.kind.value,
+        "recorded_at": adjustment.recorded_at.isoformat(),
+        "replacement": _entry_content(value.replacement) if value.replacement else None,
+        "created": value.created,
+    }
+
+
 def _uses(
     request: Request,
 ) -> tuple[CreateCustomFoodUseCase, ListCustomFoodsUseCase, RecordManualFoodUseCase]:
@@ -152,6 +188,15 @@ def _uses(
 
 def _subject(verifier: VerifierDep, authorization: str | None) -> UUID | JSONResponse:
     return _authenticated_subject(verifier, authorization)
+
+
+def _adjust_use(request: Request) -> AdjustManualFoodUseCase:
+    value: AdjustManualFoodUseCase | None = getattr(
+        request.app.state, "adjust_manual_food_use_case", None
+    )
+    if value is None:
+        raise LookupError("manual food adjustment storage not configured")
+    return value
 
 
 @router.get("/custom-foods")
@@ -223,6 +268,51 @@ def create_custom_food_version(
     return _create(subject, payload, _uses(request)[0], food_id)
 
 
+class FoodPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    food_id: UUID
+    food_version_id: UUID
+    amount: str
+    unit: str
+
+
+@router.post("/food-preview")
+def preview_food(
+    payload: FoodPreviewRequest,
+    verifier: VerifierDep,
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+) -> Response:
+    subject = _subject(verifier, authorization)
+    if isinstance(subject, JSONResponse):
+        return subject
+    try:
+        version, amount, factor, nutrition = _uses(request)[2].preview(
+            user_id=subject,
+            food_id=payload.food_id,
+            food_version_id=payload.food_version_id,
+            amount=_required_decimal(payload.amount),
+            unit=payload.unit,
+        )
+    except (ValueError, TypeError) as exc:
+        return _error(400, "invalid_food_quantity", str(exc))
+    except LookupError:
+        return _error(404, "custom_food_not_found", "custom food version not found")
+    except Exception:
+        return _error(503, "storage_unavailable", "preview temporarily unavailable")
+    return JSONResponse(
+        content={
+            "consumed_amount": str(amount),
+            "consumed_unit": version.serving_unit,
+            "portion_factor": str(factor),
+            "nutrition": {
+                key: str(value) if value is not None else None
+                for key, value in nutrition.values().items()
+            },
+        }
+    )
+
+
 @router.post("/manual-consumption")
 def record_manual_consumption(
     payload: ManualConsumptionRequest,
@@ -253,4 +343,103 @@ def record_manual_consumption(
         return _error(503, "storage_unavailable", "retry later")
     return JSONResponse(
         status_code=201 if outcome.created else 200, content=_entry_content(outcome.entry)
+    )
+
+
+@router.post("/manual-consumption/{entry_id}/preview-correction")
+def preview_manual_correction(
+    entry_id: UUID,
+    payload: ManualCorrectionPreviewRequest,
+    verifier: VerifierDep,
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+) -> Response:
+    subject = _subject(verifier, authorization)
+    if isinstance(subject, JSONResponse):
+        return subject
+    try:
+        original, amount, factor, nutrition = _adjust_use(request).preview(
+            user_id=subject,
+            entry_id=entry_id,
+            amount=_required_decimal(payload.amount),
+            unit=payload.unit,
+        )
+    except (ValueError, TypeError) as exc:
+        return _error(400, "invalid_food_quantity", str(exc))
+    except LookupError:
+        return _error(404, "manual_consumption_not_found", "active food entry not found")
+    except Exception:
+        return _error(503, "storage_unavailable", "preview temporarily unavailable")
+    return JSONResponse(
+        content={
+            "consumed_amount": str(amount),
+            "consumed_unit": original.serving_unit,
+            "portion_factor": str(factor),
+            "nutrition": {
+                key: str(value) if value is not None else None
+                for key, value in nutrition.values().items()
+            },
+        }
+    )
+
+
+@router.post("/manual-consumption/{entry_id}/corrections")
+def correct_manual_consumption(
+    entry_id: UUID,
+    payload: ManualCorrectionRequest,
+    verifier: VerifierDep,
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+) -> Response:
+    subject = _subject(verifier, authorization)
+    if isinstance(subject, JSONResponse):
+        return subject
+    try:
+        outcome = _adjust_use(request).correct(
+            user_id=subject,
+            entry_id=entry_id,
+            amount=_required_decimal(payload.amount),
+            unit=payload.unit,
+            client_event_id=payload.client_event_id,
+        )
+    except (ValueError, TypeError) as exc:
+        return _error(400, "invalid_manual_correction", str(exc))
+    except LookupError:
+        return _error(404, "manual_consumption_not_found", "active food entry not found")
+    except DuplicateManualFoodError:
+        return _error(409, "manual_correction_conflict", "correction event conflicts")
+    except Exception:
+        return _error(503, "storage_unavailable", "retry later")
+    return JSONResponse(
+        status_code=201 if outcome.created else 200,
+        content=_adjustment_content(outcome),
+    )
+
+
+@router.post("/manual-consumption/{entry_id}/void")
+def void_manual_consumption(
+    entry_id: UUID,
+    payload: ManualVoidRequest,
+    verifier: VerifierDep,
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+) -> Response:
+    subject = _subject(verifier, authorization)
+    if isinstance(subject, JSONResponse):
+        return subject
+    try:
+        outcome = _adjust_use(request).void(
+            user_id=subject,
+            entry_id=entry_id,
+            client_event_id=payload.client_event_id,
+        )
+    except LookupError:
+        return _error(404, "manual_consumption_not_found", "active food entry not found")
+    except DuplicateManualFoodError:
+        return _error(409, "manual_void_conflict", "remove event conflicts")
+    except Exception:
+        return _error(503, "storage_unavailable", "retry later")
+    return JSONResponse(
+        status_code=201 if outcome.created else 200,
+        content=_adjustment_content(outcome),
     )

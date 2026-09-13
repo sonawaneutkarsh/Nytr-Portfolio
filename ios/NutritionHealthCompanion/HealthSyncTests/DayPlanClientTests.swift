@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import NutritionHealthCompanion
 
 final class DayPlanClientTests: XCTestCase {
@@ -73,10 +74,14 @@ final class DayPlanClientTests: XCTestCase {
 
     func test_fetchDayPlan_decodesNoPlanWithoutInventingGenerationFields() async throws {
         StubProtocol.handler = { _ in
-            (200, Data("""
-            {"state":"no_plan","requested_date":"2026-08-21",
-             "reason_codes":["empty_menu_period"],"inputs_fingerprint":"fp"}
-            """.utf8))
+            (
+                200,
+                Data(
+                    """
+                    {"state":"no_plan","requested_date":"2026-08-21",
+                     "reason_codes":["empty_menu_period"],"inputs_fingerprint":"fp"}
+                    """.utf8)
+            )
         }
         let response = try await makeClient().fetchDayPlan(date: day)
         guard case .noPlan(let value) = response else { return XCTFail("expected no_plan") }
@@ -88,9 +93,13 @@ final class DayPlanClientTests: XCTestCase {
 
     func test_fetchDayPlan_decodesNotGeneratedExactShape() async throws {
         StubProtocol.handler = { _ in
-            (200, Data("""
-            {"state":"not_generated","requested_date":"2026-08-21"}
-            """.utf8))
+            (
+                200,
+                Data(
+                    """
+                    {"state":"not_generated","requested_date":"2026-08-21"}
+                    """.utf8)
+            )
         }
         let response = try await makeClient().fetchDayPlan(date: day)
         XCTAssertEqual(response, .notGenerated(NotGeneratedDay(requestedDate: "2026-08-21")))
@@ -155,13 +164,17 @@ final class DayPlanClientTests: XCTestCase {
                 request.value(forHTTPHeaderField: "Authorization"), "Bearer m7-token")
             XCTAssertEqual(
                 request.value(forHTTPHeaderField: "Content-Type"), "application/json")
-            let object = try! JSONSerialization.jsonObject(with: StubRequestBody.data(from: request))
+            let object =
+                try! JSONSerialization.jsonObject(with: StubRequestBody.data(from: request))
                 as! [String: String]
             XCTAssertEqual(Set(object.keys), Set(["date", "timezone"]))
             XCTAssertEqual(object["date"], "2026-08-21")
             XCTAssertEqual(object["timezone"], "America/New_York")
-            return (200, Self.completedData(
-                policy: nil, generatedAt: false, planItems: false))
+            return (
+                200,
+                Self.completedData(
+                    policy: nil, generatedAt: false, planItems: false)
+            )
         }
 
         let response = try await makeClient().generateDayPlan(
@@ -174,11 +187,15 @@ final class DayPlanClientTests: XCTestCase {
 
     func test_generateDayPlan_decodesNoPlanGenerationShape() async throws {
         StubProtocol.handler = { _ in
-            (200, Data("""
-            {"state":"no_plan","requested_date":"2026-08-21","plan_date":"2026-08-21",
-             "reason_codes":["no_candidate"],"inputs_fingerprint":"fp",
-             "run_id":"10000000-0000-0000-0000-000000000001"}
-            """.utf8))
+            (
+                200,
+                Data(
+                    """
+                    {"state":"no_plan","requested_date":"2026-08-21","plan_date":"2026-08-21",
+                     "reason_codes":["no_candidate"],"inputs_fingerprint":"fp",
+                     "run_id":"10000000-0000-0000-0000-000000000001"}
+                    """.utf8)
+            )
         }
         let response = try await makeClient().generateDayPlan(date: day, timezone: "UTC")
         guard case .noPlan(let value) = response else { return XCTFail("expected no_plan") }
@@ -193,12 +210,16 @@ final class DayPlanClientTests: XCTestCase {
             XCTAssertEqual(request.url?.path, "/v1/target-policies/latest")
             XCTAssertEqual(
                 request.value(forHTTPHeaderField: "Authorization"), "Bearer m7-token")
-            return (200, Data("""
-            {"version_id":"90000000-0000-0000-0000-000000000001",
-             "policy_version":"policy-p2","goals":[{"nutrient":"calories_kcal",
-             "kind":"target","value":"901.2300","weight":"1.000"}],
-             "payload_sha256":"sha","approved_at":"2026-08-21T12:00:00+00:00"}
-            """.utf8))
+            return (
+                200,
+                Data(
+                    """
+                    {"version_id":"90000000-0000-0000-0000-000000000001",
+                     "policy_version":"policy-p2","goals":[{"nutrient":"calories_kcal",
+                     "kind":"target","value":"901.2300","weight":"1.000"}],
+                     "payload_sha256":"sha","approved_at":"2026-08-21T12:00:00+00:00"}
+                    """.utf8)
+            )
         }
         let policy = try await makeClient().fetchLatestTargetPolicy()
         XCTAssertEqual(policy?.goals[0].value, "901.2300")
@@ -210,36 +231,41 @@ final class DayPlanClientTests: XCTestCase {
             XCTAssertEqual(request.httpMethod, "GET")
             XCTAssertEqual(request.url?.path, "/v1/nutrition/daily-ledger")
             let components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)
-            let query = Dictionary(uniqueKeysWithValues: (components?.queryItems ?? []).map {
-                ($0.name, $0.value)
-            })
+            let query = Dictionary(
+                uniqueKeysWithValues: (components?.queryItems ?? []).map {
+                    ($0.name, $0.value)
+                })
             XCTAssertEqual(query["date"]!, "2026-08-21")
             XCTAssertEqual(query["timezone"]!, "America/New_York")
             XCTAssertEqual(
                 request.value(forHTTPHeaderField: "Authorization"), "Bearer m7-token")
-            return (200, Data("""
-            {"local_date":"2026-08-21","timezone":"America/New_York",
-             "target":{"policy_version_id":"90000000-0000-0000-0000-000000000001",
-             "policy_version":"target.v1","calories_kcal":"2500.00",
-             "calories_goal_kind":"target","protein_g":"150.0","protein_goal_kind":"floor"},
-             "consumed_item_count":1,"known_calories_consumed":"604.27781682500",
-             "known_protein_g_consumed":"45.7386516982500",
-             "remaining_known_calories":"1895.72218317500",
-             "remaining_known_protein_g":"104.2613483017500",
-             "nutrition_completeness":"partial","nutrition_authorities":["partial"],
-             "unknown_nutrients":["sodium_mg"],"reason_codes":["nutrition_partial"],
-             "consumed_items":[{"entry_id":"70000000-0000-0000-0000-000000000001",
-             "recorded_at":"2026-08-21T16:00:00Z",
-             "plan_run_id":"10000000-0000-0000-0000-000000000001",
-             "plan_version_id":"20000000-0000-0000-0000-000000000001",
-             "plan_item_id":"50000000-0000-0000-0000-000000000001",
-             "meal_context":"post_workout_lunch","candidate_id":"candidate-1",
-             "item_name":"CYO Halal Bowl","configuration_summary":"no sauce",
-             "nutrition_authority":"partial","confidence":"partial",
-             "calories_kcal":"604.27781682500","protein_g":"45.7386516982500",
-             "unknown_nutrients":["sodium_mg"],
-             "provenance_summary":"Owner-observed configuration with external reference nutrition"}]}
-            """.utf8))
+            return (
+                200,
+                Data(
+                    """
+                    {"local_date":"2026-08-21","timezone":"America/New_York",
+                     "target":{"policy_version_id":"90000000-0000-0000-0000-000000000001",
+                     "policy_version":"target.v1","calories_kcal":"2500.00",
+                     "calories_goal_kind":"target","protein_g":"150.0","protein_goal_kind":"floor"},
+                     "consumed_item_count":1,"known_calories_consumed":"604.27781682500",
+                     "known_protein_g_consumed":"45.7386516982500",
+                     "remaining_known_calories":"1895.72218317500",
+                     "remaining_known_protein_g":"104.2613483017500",
+                     "nutrition_completeness":"partial","nutrition_authorities":["partial"],
+                     "unknown_nutrients":["sodium_mg"],"reason_codes":["nutrition_partial"],
+                     "consumed_items":[{"entry_id":"70000000-0000-0000-0000-000000000001",
+                     "recorded_at":"2026-08-21T16:00:00Z",
+                     "plan_run_id":"10000000-0000-0000-0000-000000000001",
+                     "plan_version_id":"20000000-0000-0000-0000-000000000001",
+                     "plan_item_id":"50000000-0000-0000-0000-000000000001",
+                     "meal_context":"post_workout_lunch","candidate_id":"candidate-1",
+                     "item_name":"CYO Halal Bowl","configuration_summary":"no sauce",
+                     "nutrition_authority":"partial","confidence":"partial",
+                     "calories_kcal":"604.27781682500","protein_g":"45.7386516982500",
+                     "unknown_nutrients":["sodium_mg"],
+                     "provenance_summary":"Owner-observed configuration with external reference nutrition"}]}
+                    """.utf8)
+            )
         }
 
         let ledger = try await makeClient().fetchDailyNutritionLedger(
@@ -248,9 +274,64 @@ final class DayPlanClientTests: XCTestCase {
         XCTAssertEqual(ledger.knownCaloriesConsumed, "604.27781682500")
         XCTAssertEqual(ledger.target?.caloriesKcal, "2500.00")
         XCTAssertEqual(ledger.nutritionCompleteness, .partial)
-        XCTAssertEqual(ledger.consumedItems[0].planItemId,
+        XCTAssertEqual(
+            ledger.consumedItems[0].planItemId,
             UUID(uuidString: "50000000-0000-0000-0000-000000000001"))
         XCTAssertEqual(ledger.consumedItems[0].nutritionAuthority, .partial)
+    }
+
+    func test_barcodeLedgerExternalReferenceDecodesWithoutTurningMissingNutritionIntoZero() async throws {
+        StubProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/v1/nutrition/daily-ledger")
+            let components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)
+            let query = Dictionary(
+                uniqueKeysWithValues: (components?.queryItems ?? []).map {
+                    ($0.name, $0.value)
+                })
+            XCTAssertEqual(query["date"]!, "2026-08-21")
+            XCTAssertEqual(query["timezone"]!, "America/New_York")
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: "Authorization"), "Bearer m7-token")
+            return (
+                200,
+                Data(
+                    """
+                    {"local_date":"2026-08-21","timezone":"America/New_York",
+                     "target":{"policy_version_id":"90000000-0000-0000-0000-000000000001",
+                     "policy_version":"target.v1","calories_kcal":"2500.00",
+                     "calories_goal_kind":"target","protein_g":"150.0","protein_goal_kind":"floor"},
+                     "consumed_item_count":1,"known_calories_consumed":"604.27781682500",
+                     "known_protein_g_consumed":"45.7386516982500",
+                     "remaining_known_calories":"1895.72218317500",
+                     "remaining_known_protein_g":"104.2613483017500",
+                     "nutrition_completeness":"partial","nutrition_authorities":["external_reference"],
+                     "unknown_nutrients":["sodium_mg"],"reason_codes":["nutrition_partial"],
+                     "consumed_items":[{"entry_id":"70000000-0000-0000-0000-000000000001",
+                     "recorded_at":"2026-08-21T16:00:00Z",
+                     "plan_run_id":"10000000-0000-0000-0000-000000000001",
+                     "plan_version_id":"20000000-0000-0000-0000-000000000001",
+                     "plan_item_id":"50000000-0000-0000-0000-000000000001",
+                     "meal_context":"post_workout_lunch","candidate_id":"candidate-1",
+                     "item_name":"CYO Halal Bowl","configuration_summary":"no sauce",
+                     "nutrition_authority":"external_reference","confidence":"partial",
+                     "calories_kcal":"604.27781682500","protein_g":"45.7386516982500",
+                     "unknown_nutrients":["sodium_mg"],
+                     "provenance_summary":"Owner-observed configuration with external reference nutrition"}]}
+                    """.utf8)
+            )
+        }
+
+        let ledger = try await makeClient().fetchDailyNutritionLedger(
+            date: day, timezone: "America/New_York")
+
+        XCTAssertEqual(ledger.knownCaloriesConsumed, "604.27781682500")
+        XCTAssertEqual(ledger.target?.caloriesKcal, "2500.00")
+        XCTAssertEqual(ledger.nutritionCompleteness, .partial)
+        XCTAssertEqual(
+            ledger.consumedItems[0].planItemId,
+            UUID(uuidString: "50000000-0000-0000-0000-000000000001"))
+        XCTAssertEqual(ledger.consumedItems[0].nutritionAuthority, .externalReference)
     }
 
     func test_nutritionHistoryUsesAuthenticatedEndDayAndPreservesTargetStatus() async throws {
@@ -258,28 +339,33 @@ final class DayPlanClientTests: XCTestCase {
             XCTAssertEqual(request.httpMethod, "GET")
             XCTAssertEqual(request.url?.path, "/v1/nutrition/history")
             let components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)
-            let query = Dictionary(uniqueKeysWithValues: (components?.queryItems ?? []).map {
-                ($0.name, $0.value)
-            })
+            let query = Dictionary(
+                uniqueKeysWithValues: (components?.queryItems ?? []).map {
+                    ($0.name, $0.value)
+                })
             XCTAssertEqual(query["end_date"]!, "2026-08-21")
             XCTAssertEqual(query["timezone"]!, "America/New_York")
             XCTAssertEqual(
                 request.value(forHTTPHeaderField: "Authorization"), "Bearer m7-token")
-            return (200, Data("""
-            {"start_date":"2026-08-15","end_date":"2026-08-21",
-             "timezone":"America/New_York","days":[
-              {"local_date":"2026-08-21","timezone":"America/New_York","target":null,
-               "consumed_event_count":0,"known_calories_consumed":"0",
-               "known_protein_g_consumed":"0","remaining_known_calories":null,
-               "remaining_known_protein_g":null,"nutrition_completeness":"complete",
-               "nutrition_authorities":[],"unknown_nutrients":[],"consumed_items":[],
-               "reason_codes":["target_changed_during_day"],
-               "target_status":"target_changed_during_day",
-               "calorie_adherence":"unavailable","protein_adherence":"unavailable"}],
-             "summary":{"days_with_consumption":0,"days_complete":7,"days_partial":0,
-              "days_unavailable":0,"days_target_available":6,"days_target_changed":1,
-              "known_calories_total":"0","known_protein_g_total":"0"}}
-            """.utf8))
+            return (
+                200,
+                Data(
+                    """
+                    {"start_date":"2026-08-15","end_date":"2026-08-21",
+                     "timezone":"America/New_York","days":[
+                      {"local_date":"2026-08-21","timezone":"America/New_York","target":null,
+                       "consumed_event_count":0,"known_calories_consumed":"0",
+                       "known_protein_g_consumed":"0","remaining_known_calories":null,
+                       "remaining_known_protein_g":null,"nutrition_completeness":"complete",
+                       "nutrition_authorities":[],"unknown_nutrients":[],"consumed_items":[],
+                       "reason_codes":["target_changed_during_day"],
+                       "target_status":"target_changed_during_day",
+                       "calorie_adherence":"unavailable","protein_adherence":"unavailable"}],
+                     "summary":{"days_with_consumption":0,"days_complete":7,"days_partial":0,
+                      "days_unavailable":0,"days_target_available":6,"days_target_changed":1,
+                      "known_calories_total":"0","known_protein_g_total":"0"}}
+                    """.utf8)
+            )
         }
 
         let history = try await makeClient().fetchNutritionHistory(
@@ -360,51 +446,54 @@ final class DayPlanClientTests: XCTestCase {
         let policyJSON: String
         if policy == true {
             policyJSON = """
-            ,"target_policy":{"version_id":"90000000-0000-0000-0000-000000000001",
-            "policy_version":"policy-p1","payload_sha256":"policy-sha",
-            "approved_at":"2026-08-20T10:15:30+00:00"}
-            """
+                ,"target_policy":{"version_id":"90000000-0000-0000-0000-000000000001",
+                "policy_version":"policy-p1","payload_sha256":"policy-sha",
+                "approved_at":"2026-08-20T10:15:30+00:00"}
+                """
         } else if policy == false {
             policyJSON = ",\"target_policy\":null"
         } else {
             policyJSON = ""
         }
-        let generatedJSON = generatedAt
+        let generatedJSON =
+            generatedAt
             ? ",\"generated_at\":\"2026-08-21T12:00:00.123456+00:00\"" : ""
-        let planItemsJSON = planItems
+        let planItemsJSON =
+            planItems
             ? """
             ,"plan_items":[
               {"item_id":"50000000-0000-0000-0000-000000000001",
                "slot_index":0,"rank":1,"candidate_id":"candidate-1"}]
             """
             : ""
-        return Data("""
-        {"state":"completed","requested_date":"2026-08-21","plan_date":"2026-08-21",
-         "plan_sha256":"plan-sha","inputs_fingerprint":"fingerprint",
-         "run_id":"10000000-0000-0000-0000-000000000001",
-         "version_id":"20000000-0000-0000-0000-000000000001",
-         "plan":{"artifact_kind":"daily_plan","plan_date":"2026-08-21",
-          "policy_versions":{"engine":"engine.v1","planner":"planner.v1",
-          "schedule":"schedule.v1","target":"target.v1"},
-          "menu_snapshot_sha256":"menu-sha","status":"ok","slots":[{
-           "context":"lunch","menu_period":"Lunch","status":"ok",
-           "window":["12:00:00","13:00:00"],"failure_reasons":[],
-           "rejection_counts":{},"rejection_details":[],"candidates":[{
-            "candidate_id":"candidate-1","calories_kcal":"901.2300",
-            "category_names":["Entree"],"dietary_tags":[],"lines":[{
-             "category_name":"Entree","food_id":"30000000-0000-0000-0000-000000000001",
-             "name_normalized":"Example meal","occurrence_ordinal":0,
-             "offering_id":"40000000-0000-0000-0000-000000000001",
-             "parser_version":"parser.v1","profile_content_sha256":"profile-sha",
-             "servings":"1.250","source_mid":"mid-1"}],
-            "provenance":{"offering_ids":["40000000-0000-0000-0000-000000000001"],
-             "food_ids":["30000000-0000-0000-0000-000000000001"],
-             "profile_content_sha256s":["profile-sha"]},
-            "score":{"breakdown":{"protein_g:target":"-0.125"},"total":"-0.125"},
-            "totals":{"confidence":"official_published","declared_unavailable":[],
-             "presences":{"protein_g":"known_value"},"published_zero":[],
-             "quantities":{"protein_g":"50.500","calories_kcal":"901.2300"}}}] }]}
-         \(planItemsJSON)\(policyJSON)\(generatedJSON)}
-        """.utf8)
+        return Data(
+            """
+            {"state":"completed","requested_date":"2026-08-21","plan_date":"2026-08-21",
+             "plan_sha256":"plan-sha","inputs_fingerprint":"fingerprint",
+             "run_id":"10000000-0000-0000-0000-000000000001",
+             "version_id":"20000000-0000-0000-0000-000000000001",
+             "plan":{"artifact_kind":"daily_plan","plan_date":"2026-08-21",
+              "policy_versions":{"engine":"engine.v1","planner":"planner.v1",
+              "schedule":"schedule.v1","target":"target.v1"},
+              "menu_snapshot_sha256":"menu-sha","status":"ok","slots":[{
+               "context":"lunch","menu_period":"Lunch","status":"ok",
+               "window":["12:00:00","13:00:00"],"failure_reasons":[],
+               "rejection_counts":{},"rejection_details":[],"candidates":[{
+                "candidate_id":"candidate-1","calories_kcal":"901.2300",
+                "category_names":["Entree"],"dietary_tags":[],"lines":[{
+                 "category_name":"Entree","food_id":"30000000-0000-0000-0000-000000000001",
+                 "name_normalized":"Example meal","occurrence_ordinal":0,
+                 "offering_id":"40000000-0000-0000-0000-000000000001",
+                 "parser_version":"parser.v1","profile_content_sha256":"profile-sha",
+                 "servings":"1.250","source_mid":"mid-1"}],
+                "provenance":{"offering_ids":["40000000-0000-0000-0000-000000000001"],
+                 "food_ids":["30000000-0000-0000-0000-000000000001"],
+                 "profile_content_sha256s":["profile-sha"]},
+                "score":{"breakdown":{"protein_g:target":"-0.125"},"total":"-0.125"},
+                "totals":{"confidence":"official_published","declared_unavailable":[],
+                 "presences":{"protein_g":"known_value"},"published_zero":[],
+                 "quantities":{"protein_g":"50.500","calories_kcal":"901.2300"}}}] }]}
+             \(planItemsJSON)\(policyJSON)\(generatedJSON)}
+            """.utf8)
     }
 }

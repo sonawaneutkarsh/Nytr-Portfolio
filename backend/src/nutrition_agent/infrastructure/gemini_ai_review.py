@@ -19,8 +19,6 @@ from nutrition_agent.domain.ai_review import (
     AIReviewSnapshot,
 )
 
-# Stable Developer API model.  Keep this server-side and override only after
-# verifying availability and terms; clients never choose a model.
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 MAX_PROVIDER_RESPONSE_BYTES = 12_000
 
@@ -68,11 +66,13 @@ class GeminiAIReviewProvider:
         self,
         api_key: str | None,
         *,
+        enabled: bool = False,
         model: str = DEFAULT_GEMINI_MODEL,
         timeout_seconds: float = 20.0,
         client: httpx.Client | None = None,
     ) -> None:
         self._api_key = (api_key or "").strip() or None
+        self._enabled = enabled
         if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,79}", model):
             raise ValueError("invalid Gemini model identifier")
         self._model = model
@@ -80,6 +80,8 @@ class GeminiAIReviewProvider:
         self._request_lock = Lock()
 
     def generate(self, snapshot: AIReviewSnapshot) -> AIReviewContent:
+        if not self._enabled:
+            raise AIReviewProviderError(AIReviewProviderFailure.PRIVACY_DISABLED)
         if self._api_key is None:
             raise AIReviewProviderError(AIReviewProviderFailure.NOT_CONFIGURED)
         if not self._request_lock.acquire(blocking=False):
@@ -112,13 +114,8 @@ class GeminiAIReviewProvider:
             ],
             "generationConfig": {
                 "maxOutputTokens": 400,
-                "thinkingConfig": {"thinkingLevel": "low"},
-                "responseFormat": {
-                    "text": {
-                        "mimeType": "APPLICATION_JSON",
-                        "schema": RESPONSE_SCHEMA,
-                    }
-                },
+                "responseMimeType": "application/json",
+                "responseJsonSchema": RESPONSE_SCHEMA,
             },
         }
         try:
@@ -135,10 +132,6 @@ class GeminiAIReviewProvider:
 
         if response.status_code == 429:
             raise AIReviewProviderError(AIReviewProviderFailure.RATE_LIMITED)
-        if response.status_code in {401, 403}:
-            raise AIReviewProviderError(AIReviewProviderFailure.AUTHENTICATION)
-        if response.status_code == 400:
-            raise AIReviewProviderError(AIReviewProviderFailure.INVALID_REQUEST)
         if response.status_code >= 400:
             raise AIReviewProviderError(AIReviewProviderFailure.UNAVAILABLE)
         if len(response.content) > MAX_PROVIDER_RESPONSE_BYTES:

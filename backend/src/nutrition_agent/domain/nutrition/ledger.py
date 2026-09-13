@@ -52,6 +52,9 @@ class ConsumedNutritionEvidence:
     custom_food_version_id: UUID | None = None
     consumed_amount: Decimal | None = None
     consumed_unit: str | None = None
+    serving_description: str | None = None
+    serving_amount: Decimal | None = None
+    serving_unit: str | None = None
 
     def __post_init__(self) -> None:
         if self.recorded_at.tzinfo is None or self.recorded_at.utcoffset() is None:

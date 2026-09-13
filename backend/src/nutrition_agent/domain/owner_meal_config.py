@@ -33,18 +33,18 @@ from nutrition_agent.domain.configurable_meals import (
 )
 from nutrition_agent.domain.external_nutrition import USUAL_HALAL_EXTERNAL_REFERENCES
 
-OWNER_OBSERVED_CONFIG_VERSION = "harrisburg-stacks-owner-observed.v1"
-HALAL_TEMPLATE_VERSION = "harrisburg-stacks-cyo-halal.v1"
+OWNER_OBSERVED_CONFIG_VERSION = "institutional-stacks-demo-observed.v1"
+HALAL_TEMPLATE_VERSION = "institutional-stacks-cyo-halal.v1"
 OWNER_PREFERENCE_VERSION = "owner-meal-preferences.v1"
 OWNER_PREFERENCE_VERSION_V2 = "owner-meal-preferences.v2"
 
 OWNER_OBSERVED_EVIDENCE = EvidenceReference(
     source_class=EvidenceClass.OWNER_OBSERVED_CONFIGURATION,
-    reference_id="harrisburg-stacks-in-person-observation",
+    reference_id="institutional-stacks-illustrative-observation",
     version=OWNER_OBSERVED_CONFIG_VERSION,
     description=(
         "Owner-recorded Stacks configuration controls and approximate served portions; "
-        "not Penn State-published nutrition or availability."
+        "not institution-published nutrition or availability."
     ),
 )
 

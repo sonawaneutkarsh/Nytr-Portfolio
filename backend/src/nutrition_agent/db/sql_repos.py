@@ -19,7 +19,7 @@ from uuid import NAMESPACE_OID, UUID, uuid4, uuid5
 from nutrition_agent.application.ports import (
     AcceptedMenuPageKey,
     AcceptedMenuPageObservation,
-    BodyProfileRepository,
+    BodyGoalsRepository,
     ConsumptionRepository,
     CustomFoodRepository,
     DailyNutritionLedgerRepository,
@@ -60,9 +60,17 @@ from nutrition_agent.application.ports import (
     TrainingSessionRepository,
     ValidatedMenuLabelObservation,
     ValidatedMenuPage,
-    WaistMeasurementRepository,
 )
-from nutrition_agent.domain.body_goals import OwnerBodyProfile, WaistMeasurement
+from nutrition_agent.domain.body_goals import (
+    ActivityLevel,
+    BodyGoalProfileVersion,
+    FormulaSex,
+    StartingCalorieProposal,
+    StartingTargetDecision,
+    StartingTargetDecisionValue,
+    WaistMeasurement,
+    WaistUnit,
+)
 from nutrition_agent.domain.consumption import (
     ConsumptionEntry,
     ConsumptionState,
@@ -85,9 +93,12 @@ from nutrition_agent.domain.next_meal_consumption import (
     RecordNextMealConsumptionOutcome,
 )
 from nutrition_agent.domain.nutrition.custom_foods import (
+    AdjustManualFoodOutcome,
     CustomFoodAuthority,
     CustomFoodProvenance,
     CustomFoodVersion,
+    ManualFoodAdjustmentKind,
+    ManualFoodConsumptionAdjustment,
     ManualFoodConsumptionEntry,
     ManualMealPeriod,
     ManualNutritionFacts,
@@ -361,145 +372,6 @@ class SqlHealthBodyMassRepository:
         finally:
             conn.close()
         return observations
-
-
-class SqlBodyProfileRepository(BodyProfileRepository):
-    """Owner profile row for explicit height and optional target weight."""
-
-    def __init__(self, dsn: str) -> None:
-        self._dsn = dsn
-
-    def _authenticated_cursor(self, user_sub: str) -> Any:
-        import psycopg
-
-        conn = psycopg.connect(self._dsn)
-        cur = conn.cursor()
-        cur.execute("SET LOCAL ROLE authenticated")
-        cur.execute("SELECT set_config('request.jwt.claim.sub', %s, true)", (user_sub,))
-        return conn, cur
-
-    def get(self, user_id: UUID) -> OwnerBodyProfile | None:
-        conn, cur = self._authenticated_cursor(str(user_id))
-        try:
-            cur.execute(
-                "SELECT user_id, height_cm, target_weight_kg, updated_at "
-                "FROM owner_body_profile WHERE user_id=%s",
-                (str(user_id),),
-            )
-            row = cur.fetchone()
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-        if row is None:
-            return None
-        return OwnerBodyProfile(
-            user_id=UUID(str(row[0])),
-            height_cm=Decimal(row[1]),
-            target_weight_kg=Decimal(row[2]) if row[2] is not None else None,
-            updated_at=row[3],
-        )
-
-    def save(self, profile: OwnerBodyProfile) -> None:
-        conn, cur = self._authenticated_cursor(str(profile.user_id))
-        try:
-            cur.execute(
-                """
-                INSERT INTO owner_body_profile (user_id, height_cm, target_weight_kg, updated_at)
-                VALUES (%s,%s,%s,%s)
-                ON CONFLICT (user_id) DO UPDATE SET
-                    height_cm=EXCLUDED.height_cm,
-                    target_weight_kg=EXCLUDED.target_weight_kg,
-                    updated_at=EXCLUDED.updated_at
-                """,
-                (
-                    str(profile.user_id),
-                    profile.height_cm,
-                    profile.target_weight_kg,
-                    profile.updated_at,
-                ),
-            )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-
-
-class SqlWaistMeasurementRepository(WaistMeasurementRepository):
-    """Append-only owner-entered waist evidence under RLS."""
-
-    def __init__(self, dsn: str) -> None:
-        self._dsn = dsn
-
-    def _authenticated_cursor(self, user_sub: str) -> Any:
-        import psycopg
-
-        conn = psycopg.connect(self._dsn)
-        cur = conn.cursor()
-        cur.execute("SET LOCAL ROLE authenticated")
-        cur.execute("SELECT set_config('request.jwt.claim.sub', %s, true)", (user_sub,))
-        return conn, cur
-
-    def append(self, measurement: WaistMeasurement) -> None:
-        conn, cur = self._authenticated_cursor(str(measurement.user_id))
-        try:
-            cur.execute(
-                """
-                INSERT INTO waist_measurement
-                    (measurement_id, user_id, waist_cm, measured_at, recorded_at, source)
-                VALUES (%s,%s,%s,%s,%s,%s)
-                """,
-                (
-                    str(measurement.measurement_id),
-                    str(measurement.user_id),
-                    measurement.waist_cm,
-                    measurement.measured_at,
-                    measurement.recorded_at,
-                    measurement.source,
-                ),
-            )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-
-    def list_recent(self, user_id: UUID, limit: int = 30) -> tuple[WaistMeasurement, ...]:
-        conn, cur = self._authenticated_cursor(str(user_id))
-        try:
-            cur.execute(
-                """
-                SELECT measurement_id, user_id, waist_cm, measured_at, recorded_at, source
-                FROM waist_measurement
-                WHERE user_id=%s
-                ORDER BY measured_at DESC, measurement_id DESC
-                LIMIT %s
-                """,
-                (str(user_id), limit),
-            )
-            rows = cur.fetchall()
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-        return tuple(
-            WaistMeasurement(
-                measurement_id=UUID(str(row[0])),
-                user_id=UUID(str(row[1])),
-                waist_cm=Decimal(row[2]),
-                measured_at=row[3],
-                recorded_at=row[4],
-                source=str(row[5]),
-            )
-            for row in rows
-        )
 
 
 class SqlTrainingSessionRepository(TrainingSessionRepository):
@@ -3009,10 +2881,15 @@ class SqlConsumptionRepository(
                        consumed_amount, consumed_unit,
                        calories_kcal, protein_g, carbohydrate_g, total_fat_g,
                        fiber_g, sodium_mg, source_system, nutrition_authority,
-                       nutrition_confidence, provenance_summary
-                FROM manual_food_consumption
-                WHERE user_id=%s AND recorded_at >= %s AND recorded_at < %s
-                ORDER BY recorded_at ASC, entry_id ASC
+                       nutrition_confidence, provenance_summary,
+                       serving_amount, serving_unit
+                FROM manual_food_consumption c
+                WHERE c.user_id=%s AND c.recorded_at >= %s AND c.recorded_at < %s
+                  AND NOT EXISTS (
+                      SELECT 1 FROM manual_food_consumption_adjustment a
+                      WHERE a.user_id=c.user_id AND a.superseded_entry_id=c.entry_id
+                  )
+                ORDER BY c.recorded_at ASC, c.entry_id ASC
                 """,
                 (str(user_id), start_inclusive, end_exclusive),
             )
@@ -3052,6 +2929,9 @@ class SqlConsumptionRepository(
                         custom_food_version_id=UUID(str(row[3])),
                         consumed_amount=row[8],
                         consumed_unit=str(row[9]),
+                        serving_description=str(row[7]),
+                        serving_amount=row[20],
+                        serving_unit=str(row[21]),
                     )
                 )
             cur.execute(
@@ -3140,6 +3020,7 @@ class SqlCustomFoodRepository(_OwnedRepositoryBase, CustomFoodRepository):
                 payload_sha256=raw_provenance.get("payload_sha256"),
                 data_license=raw_provenance.get("data_license"),
                 nutrition_basis=raw_provenance.get("nutrition_basis"),
+                serving_authority=raw_provenance.get("serving_authority"),
             ),
         )
 
@@ -3156,6 +3037,7 @@ class SqlCustomFoodRepository(_OwnedRepositoryBase, CustomFoodRepository):
             "payload_sha256": value.payload_sha256,
             "data_license": value.data_license,
             "nutrition_basis": value.nutrition_basis,
+            "serving_authority": value.serving_authority,
         }
 
     def save_version(self, version: CustomFoodVersion, *, create_identity: bool) -> None:
@@ -3397,6 +3279,189 @@ class SqlCustomFoodRepository(_OwnedRepositoryBase, CustomFoodRepository):
         finally:
             conn.close()
 
+    def find_active_consumption(
+        self, user_id: UUID, entry_id: UUID
+    ) -> ManualFoodConsumptionEntry | None:
+        conn, cur = self._authenticated_cursor(str(user_id))
+        columns = (
+            "c.entry_id,c.user_id,c.food_id,c.food_version_id,c.client_event_id,c.meal_period,"
+            "c.consumed_amount,c.consumed_unit,c.portion_factor,c.food_name,c.brand,"
+            "c.serving_description,c.serving_amount,c.serving_unit,c.calories_kcal,c.protein_g,"
+            "c.carbohydrate_g,c.total_fat_g,c.fiber_g,c.sodium_mg,c.recorded_at,"
+            "c.source_system,c.nutrition_authority,c.nutrition_confidence,c.provenance_summary"
+        )
+        try:
+            cur.execute(
+                f"SELECT {columns} FROM manual_food_consumption c "
+                "WHERE c.user_id=%s AND c.entry_id=%s "
+                "AND NOT EXISTS (SELECT 1 FROM manual_food_consumption_adjustment a "
+                "WHERE a.user_id=c.user_id AND a.superseded_entry_id=c.entry_id)",
+                (str(user_id), str(entry_id)),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return self._consumption(row) if row is not None else None
+        finally:
+            conn.close()
+
+    def find_consumption(self, user_id: UUID, entry_id: UUID) -> ManualFoodConsumptionEntry | None:
+        conn, cur = self._authenticated_cursor(str(user_id))
+        columns = (
+            "entry_id,user_id,food_id,food_version_id,client_event_id,meal_period,"
+            "consumed_amount,consumed_unit,portion_factor,food_name,brand,"
+            "serving_description,serving_amount,serving_unit,calories_kcal,protein_g,"
+            "carbohydrate_g,total_fat_g,fiber_g,sodium_mg,recorded_at,source_system,"
+            "nutrition_authority,nutrition_confidence,provenance_summary"
+        )
+        try:
+            cur.execute(
+                f"SELECT {columns} FROM manual_food_consumption WHERE user_id=%s AND entry_id=%s",
+                (str(user_id), str(entry_id)),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return self._consumption(row) if row is not None else None
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _adjustment(row: Sequence[Any]) -> ManualFoodConsumptionAdjustment:
+        return ManualFoodConsumptionAdjustment(
+            adjustment_id=UUID(str(row[0])),
+            user_id=UUID(str(row[1])),
+            client_event_id=UUID(str(row[2])),
+            superseded_entry_id=UUID(str(row[3])),
+            replacement_entry_id=UUID(str(row[4])) if row[4] is not None else None,
+            kind=ManualFoodAdjustmentKind(str(row[5])),
+            recorded_at=row[6],
+        )
+
+    def save_adjustment(
+        self,
+        adjustment: ManualFoodConsumptionAdjustment,
+        replacement: ManualFoodConsumptionEntry | None,
+    ) -> AdjustManualFoodOutcome:
+        from psycopg import errors as psycopg_errors
+
+        conn, cur = self._authenticated_cursor(str(adjustment.user_id))
+        consumption_columns = (
+            "entry_id,user_id,food_id,food_version_id,client_event_id,meal_period,"
+            "consumed_amount,consumed_unit,portion_factor,food_name,brand,serving_description,"
+            "serving_amount,serving_unit,calories_kcal,protein_g,carbohydrate_g,total_fat_g,"
+            "fiber_g,sodium_mg,recorded_at,source_system,nutrition_authority,"
+            "nutrition_confidence,provenance_summary"
+        )
+        adjustment_columns = (
+            "adjustment_id,user_id,client_event_id,superseded_entry_id,"
+            "replacement_entry_id,kind,recorded_at"
+        )
+        try:
+            cur.execute(
+                f"SELECT {adjustment_columns} FROM manual_food_consumption_adjustment "
+                "WHERE user_id=%s AND client_event_id=%s",
+                (str(adjustment.user_id), str(adjustment.client_event_id)),
+            )
+            existing_row = cur.fetchone()
+            if existing_row is not None:
+                existing = self._adjustment(existing_row)
+                existing_replacement = None
+                if existing.replacement_entry_id is not None:
+                    cur.execute(
+                        f"SELECT {consumption_columns} FROM manual_food_consumption "
+                        "WHERE user_id=%s AND entry_id=%s",
+                        (str(existing.user_id), str(existing.replacement_entry_id)),
+                    )
+                    replacement_row = cur.fetchone()
+                    if replacement_row is None:
+                        raise ValueError("adjustment replacement is missing")
+                    existing_replacement = self._consumption(replacement_row)
+                same_request = (
+                    existing.superseded_entry_id == adjustment.superseded_entry_id
+                    and existing.kind is adjustment.kind
+                    and (
+                        (existing_replacement is None and replacement is None)
+                        or (
+                            existing_replacement is not None
+                            and replacement is not None
+                            and existing_replacement.correction_facts()
+                            == replacement.correction_facts()
+                        )
+                    )
+                )
+                if not same_request:
+                    raise DuplicateManualFoodError("manual adjustment event conflicts")
+                conn.commit()
+                return AdjustManualFoodOutcome(existing, existing_replacement, False)
+
+            cur.execute(
+                "SELECT 1 FROM manual_food_consumption c "
+                "WHERE c.user_id=%s AND c.entry_id=%s "
+                "AND NOT EXISTS (SELECT 1 FROM manual_food_consumption_adjustment a "
+                "WHERE a.user_id=c.user_id AND a.superseded_entry_id=c.entry_id)",
+                (str(adjustment.user_id), str(adjustment.superseded_entry_id)),
+            )
+            if cur.fetchone() is None:
+                raise LookupError("active manual consumption not found")
+
+            if replacement is not None:
+                n = replacement.nutrition
+                cur.execute(
+                    f"INSERT INTO manual_food_consumption ({consumption_columns}) "
+                    f"VALUES ({','.join(['%s'] * 25)})",
+                    (
+                        str(replacement.entry_id),
+                        str(replacement.user_id),
+                        str(replacement.food_id),
+                        str(replacement.food_version_id),
+                        str(replacement.client_event_id),
+                        replacement.meal_period.value,
+                        replacement.consumed_amount,
+                        replacement.consumed_unit,
+                        replacement.portion_factor,
+                        replacement.food_name,
+                        replacement.brand,
+                        replacement.serving_description,
+                        replacement.serving_amount,
+                        replacement.serving_unit,
+                        n.calories_kcal,
+                        n.protein_g,
+                        n.carbohydrate_g,
+                        n.total_fat_g,
+                        n.fiber_g,
+                        n.sodium_mg,
+                        replacement.recorded_at,
+                        replacement.source_system,
+                        replacement.nutrition_authority,
+                        replacement.nutrition_confidence,
+                        replacement.provenance_summary,
+                    ),
+                )
+            cur.execute(
+                f"INSERT INTO manual_food_consumption_adjustment ({adjustment_columns}) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    str(adjustment.adjustment_id),
+                    str(adjustment.user_id),
+                    str(adjustment.client_event_id),
+                    str(adjustment.superseded_entry_id),
+                    str(adjustment.replacement_entry_id)
+                    if adjustment.replacement_entry_id is not None
+                    else None,
+                    adjustment.kind.value,
+                    adjustment.recorded_at,
+                ),
+            )
+            conn.commit()
+            return AdjustManualFoodOutcome(adjustment, replacement, True)
+        except psycopg_errors.UniqueViolation as exc:
+            conn.rollback()
+            raise DuplicateManualFoodError("manual adjustment conflicts") from exc
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
 
 class SqlPlanRunRepository(_OwnedRepositoryBase):
     """Daily-plan persistence (M6, ADR-017). Append-only; no DELETE.
@@ -3595,6 +3660,384 @@ class SqlPlanRunRepository(_OwnedRepositoryBase):
             plan_canonical=str(row[13]) if row[13] else None,
             plan_items=items,
         )
+
+
+class SqlBodyGoalsRepository(_OwnedRepositoryBase, BodyGoalsRepository):
+    @staticmethod
+    def _profile(row: Sequence[Any]) -> BodyGoalProfileVersion:
+        return BodyGoalProfileVersion(
+            profile_id=UUID(str(row[0])),
+            user_id=UUID(str(row[1])),
+            policy_version=str(row[2]),
+            height_cm=Decimal(row[3]),
+            date_of_birth=row[4],
+            formula_sex=FormulaSex(str(row[5])),
+            activity_level=ActivityLevel(str(row[6])),
+            target_weight_kg=Decimal(row[7]) if row[7] is not None else None,
+            payload_sha256=str(row[8]),
+            created_at=row[9],
+        )
+
+    @staticmethod
+    def _waist(row: Sequence[Any]) -> WaistMeasurement:
+        return WaistMeasurement(
+            measurement_id=UUID(str(row[0])),
+            user_id=UUID(str(row[1])),
+            measured_at=row[2],
+            value_cm=Decimal(row[3]),
+            entered_value=Decimal(row[4]),
+            entered_unit=WaistUnit(str(row[5])),
+            provenance=str(row[6]),
+            corrects_measurement_id=UUID(str(row[7])) if row[7] else None,
+            recorded_at=row[8],
+        )
+
+    @staticmethod
+    def _proposal(row: Sequence[Any]) -> StartingCalorieProposal:
+        return StartingCalorieProposal(
+            proposal_id=UUID(str(row[0])),
+            user_id=UUID(str(row[1])),
+            profile_id=UUID(str(row[2])),
+            goal_policy_version_id=UUID(str(row[3])),
+            body_mass_sample_uuid=UUID(str(row[4])),
+            policy_version=str(row[5]),
+            as_of_date=row[6],
+            timezone=str(row[7]),
+            age_years=int(row[8]),
+            body_mass_kg=Decimal(row[9]),
+            bmr_kcal=Decimal(row[10]),
+            activity_multiplier=Decimal(row[11]),
+            maintenance_kcal=Decimal(row[12]),
+            goal_adjustment_kcal=Decimal(row[13]),
+            proposed_calorie_kcal=Decimal(row[14]),
+            evidence_sha256=str(row[15]),
+            created_at=row[16],
+        )
+
+    @staticmethod
+    def _decision(row: Sequence[Any]) -> StartingTargetDecision:
+        return StartingTargetDecision(
+            decision_id=UUID(str(row[0])),
+            user_id=UUID(str(row[1])),
+            proposal_id=UUID(str(row[2])),
+            decision=StartingTargetDecisionValue(str(row[3])),
+            client_event_id=UUID(str(row[4])),
+            resulting_target_policy_version_id=UUID(str(row[5])) if row[5] else None,
+            decided_at=row[6],
+        )
+
+    def save_profile(self, profile: BodyGoalProfileVersion) -> BodyGoalProfileVersion:
+        conn, cur = self._authenticated_cursor(str(profile.user_id))
+        try:
+            cur.execute(
+                """INSERT INTO body_goal_profile_version
+                (profile_id,user_id,policy_version,height_cm,date_of_birth,formula_sex,activity_level,target_weight_kg,payload_sha256,created_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (user_id,payload_sha256) DO NOTHING
+                RETURNING profile_id,user_id,policy_version,height_cm,date_of_birth,
+                    formula_sex,activity_level,target_weight_kg,payload_sha256,created_at""",
+                (
+                    str(profile.profile_id),
+                    str(profile.user_id),
+                    profile.policy_version,
+                    profile.height_cm,
+                    profile.date_of_birth,
+                    profile.formula_sex.value,
+                    profile.activity_level.value,
+                    profile.target_weight_kg,
+                    profile.payload_sha256,
+                    profile.created_at,
+                ),
+            )
+            row = cur.fetchone()
+            if row is None:
+                cur.execute(
+                    """SELECT profile_id,user_id,policy_version,height_cm,date_of_birth,
+                    formula_sex,activity_level,target_weight_kg,payload_sha256,created_at
+                    FROM body_goal_profile_version WHERE user_id=%s AND payload_sha256=%s""",
+                    (str(profile.user_id), profile.payload_sha256),
+                )
+                row = cur.fetchone()
+            conn.commit()
+            if row is None:
+                raise RuntimeError("profile save did not resolve an immutable version")
+            return self._profile(row)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def latest_profile(self, user_id: UUID) -> BodyGoalProfileVersion | None:
+        conn, cur = self._authenticated_cursor(str(user_id))
+        try:
+            cur.execute(
+                """SELECT profile_id,user_id,policy_version,height_cm,date_of_birth,
+                formula_sex,activity_level,target_weight_kg,payload_sha256,created_at
+                FROM body_goal_profile_version
+                WHERE user_id=%s ORDER BY created_at DESC, profile_id DESC LIMIT 1""",
+                (str(user_id),),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return self._profile(row) if row else None
+
+    def save_waist(self, measurement: WaistMeasurement) -> None:
+        conn, cur = self._authenticated_cursor(str(measurement.user_id))
+        try:
+            cur.execute(
+                """INSERT INTO waist_measurement
+                (measurement_id,user_id,measured_at,value_cm,entered_value,entered_unit,provenance,corrects_measurement_id,recorded_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (
+                    str(measurement.measurement_id),
+                    str(measurement.user_id),
+                    measurement.measured_at,
+                    measurement.value_cm,
+                    measurement.entered_value,
+                    measurement.entered_unit.value,
+                    measurement.provenance,
+                    str(measurement.corrects_measurement_id)
+                    if measurement.corrects_measurement_id
+                    else None,
+                    measurement.recorded_at,
+                ),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def list_active_waist(self, user_id: UUID) -> tuple[WaistMeasurement, ...]:
+        conn, cur = self._authenticated_cursor(str(user_id))
+        try:
+            cur.execute(
+                """SELECT w.measurement_id,w.user_id,w.measured_at,w.value_cm,
+                w.entered_value,w.entered_unit,
+                w.provenance,w.corrects_measurement_id,w.recorded_at FROM waist_measurement w
+                WHERE w.user_id=%s AND NOT EXISTS (SELECT 1 FROM waist_measurement c
+                    WHERE c.user_id=w.user_id AND c.corrects_measurement_id=w.measurement_id)
+                ORDER BY w.measured_at,w.measurement_id""",
+                (str(user_id),),
+            )
+            rows = cur.fetchall()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return tuple(self._waist(row) for row in rows)
+
+    def save_starting_proposal(
+        self, proposal: StartingCalorieProposal
+    ) -> tuple[StartingCalorieProposal, bool]:
+        conn, cur = self._authenticated_cursor(str(proposal.user_id))
+        try:
+            cur.execute(
+                """INSERT INTO starting_calorie_proposal
+                (proposal_id,user_id,profile_id,goal_policy_version_id,body_mass_sample_uuid,policy_version,
+                 as_of_date,timezone,age_years,body_mass_kg,bmr_kcal,activity_multiplier,maintenance_kcal,
+                 goal_adjustment_kcal,proposed_calorie_kcal,evidence_sha256,created_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (user_id,evidence_sha256) DO NOTHING""",
+                (
+                    str(proposal.proposal_id),
+                    str(proposal.user_id),
+                    str(proposal.profile_id),
+                    str(proposal.goal_policy_version_id),
+                    str(proposal.body_mass_sample_uuid),
+                    proposal.policy_version,
+                    proposal.as_of_date,
+                    proposal.timezone,
+                    proposal.age_years,
+                    proposal.body_mass_kg,
+                    proposal.bmr_kcal,
+                    proposal.activity_multiplier,
+                    proposal.maintenance_kcal,
+                    proposal.goal_adjustment_kcal,
+                    proposal.proposed_calorie_kcal,
+                    proposal.evidence_sha256,
+                    proposal.created_at,
+                ),
+            )
+            created = cur.rowcount == 1
+            if not created:
+                cur.execute(
+                    self._proposal_select() + " WHERE user_id=%s AND evidence_sha256=%s",
+                    (str(proposal.user_id), proposal.evidence_sha256),
+                )
+                proposal = self._proposal(cur.fetchone())
+            conn.commit()
+            return proposal, created
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _proposal_select() -> str:
+        return """SELECT proposal_id,user_id,profile_id,goal_policy_version_id,
+            body_mass_sample_uuid,
+            policy_version,as_of_date,timezone,age_years,body_mass_kg,bmr_kcal,activity_multiplier,
+            maintenance_kcal,goal_adjustment_kcal,proposed_calorie_kcal,evidence_sha256,created_at
+            FROM starting_calorie_proposal"""
+
+    def latest_starting_proposal(self, user_id: UUID) -> StartingCalorieProposal | None:
+        conn, cur = self._authenticated_cursor(str(user_id))
+        try:
+            cur.execute(
+                self._proposal_select()
+                + " WHERE user_id=%s ORDER BY created_at DESC,proposal_id DESC LIMIT 1",
+                (str(user_id),),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return self._proposal(row) if row else None
+
+    def find_starting_proposal(
+        self, user_id: UUID, proposal_id: UUID
+    ) -> StartingCalorieProposal | None:
+        conn, cur = self._authenticated_cursor(str(user_id))
+        try:
+            cur.execute(
+                self._proposal_select() + " WHERE user_id=%s AND proposal_id=%s",
+                (str(user_id), str(proposal_id)),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return self._proposal(row) if row else None
+
+    def find_starting_decision(
+        self, user_id: UUID, proposal_id: UUID
+    ) -> StartingTargetDecision | None:
+        conn, cur = self._authenticated_cursor(str(user_id))
+        try:
+            cur.execute(
+                """SELECT decision_id,user_id,proposal_id,decision,client_event_id,
+                resulting_target_policy_version_id,decided_at
+                FROM starting_calorie_proposal_decision
+                WHERE user_id=%s AND proposal_id=%s""",
+                (str(user_id), str(proposal_id)),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return self._decision(row) if row else None
+
+    def decide_starting_proposal(
+        self,
+        proposal: StartingCalorieProposal,
+        decision: StartingTargetDecision,
+        resulting_policy: TargetPolicyVersion | None,
+        target_decision_log: DecisionLogEntry | None,
+    ) -> tuple[StartingTargetDecision, bool]:
+        conn, cur = self._serializable_authenticated_cursor(str(proposal.user_id))
+        try:
+            cur.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (str(proposal.user_id),)
+            )
+            cur.execute(
+                """SELECT decision_id,user_id,proposal_id,decision,client_event_id,
+                resulting_target_policy_version_id,decided_at
+                FROM starting_calorie_proposal_decision
+                WHERE user_id=%s AND (proposal_id=%s OR client_event_id=%s)
+                LIMIT 1""",
+                (
+                    str(proposal.user_id),
+                    str(proposal.proposal_id),
+                    str(decision.client_event_id),
+                ),
+            )
+            existing_row = cur.fetchone()
+            if existing_row is not None:
+                existing = self._decision(existing_row)
+                if (
+                    existing.proposal_id != decision.proposal_id
+                    or existing.decision != decision.decision
+                    or existing.client_event_id != decision.client_event_id
+                ):
+                    raise ValueError("starting target decision conflict")
+                conn.commit()
+                return existing, False
+            cur.execute(
+                "SELECT 1 FROM target_policy_version WHERE user_id=%s LIMIT 1",
+                (str(proposal.user_id),),
+            )
+            if resulting_policy is not None and cur.fetchone() is not None:
+                raise ValueError("approved target changed after proposal")
+            if resulting_policy is not None:
+                assert target_decision_log is not None
+                cur.execute(
+                    """INSERT INTO target_policy_version(
+                        version_id,user_id,policy_version,goals,payload_sha256,created_at)
+                    VALUES (%s,%s,%s,%s,%s,%s)""",
+                    (
+                        str(resulting_policy.version_id),
+                        str(resulting_policy.user_id),
+                        resulting_policy.policy_version,
+                        json.dumps(resulting_policy.goals_jsonb),
+                        resulting_policy.payload_sha256,
+                        resulting_policy.created_at,
+                    ),
+                )
+                cur.execute(
+                    """INSERT INTO decision_log(
+                        decision_id,user_id,subject,decision,rationale,policy_version_id,decided_at)
+                    VALUES (%s,%s,'target_policy','approved',%s,%s,%s)""",
+                    (
+                        str(target_decision_log.decision_id),
+                        str(target_decision_log.user_id),
+                        target_decision_log.rationale,
+                        str(target_decision_log.policy_version_id),
+                        target_decision_log.decided_at,
+                    ),
+                )
+            cur.execute(
+                """INSERT INTO starting_calorie_proposal_decision
+                (decision_id,user_id,proposal_id,decision,client_event_id,resulting_target_policy_version_id,decided_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                (
+                    str(decision.decision_id),
+                    str(decision.user_id),
+                    str(decision.proposal_id),
+                    decision.decision.value,
+                    str(decision.client_event_id),
+                    str(decision.resulting_target_policy_version_id)
+                    if decision.resulting_target_policy_version_id
+                    else None,
+                    decision.decided_at,
+                ),
+            )
+            conn.commit()
+            return decision, True
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 
 class SqlTargetPolicyRepository(_OwnedRepositoryBase):

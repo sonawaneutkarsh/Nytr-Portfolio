@@ -231,7 +231,7 @@ def test_v5_keeps_variant_a_eligible_and_variant_b_unresolved() -> None:
         for detail in result.slots[0].rejection_details
     )
     assert sha256(to_json_bytes(plan_document(result))).hexdigest() == (
-        "c7a675afcb58517eb44dbb6f037d0f7f1b5b63eb5fcfd2cd56af1b4b9a29fce9"
+        "da306c1668c886989d408a36cb4f6d944181c92783a7013c851473981ff0287c"
     )
 
 
@@ -245,10 +245,10 @@ def test_historical_v3_and_v4_artifact_hashes_remain_frozen() -> None:
     )
 
     assert sha256(to_json_bytes(plan_document(v3))).hexdigest() == (
-        "cb515a9a3a74af2f655042ae5eff4586fa2b5f24c2a4ef28abda6677ef1e1431"
+        "58323f9950695423f8d0ca5578933b8609f0c4f727ca854a53ffa2def4f07c3b"
     )
     assert sha256(to_json_bytes(plan_document(v4))).hexdigest() == (
-        "234f6311495ec99be468066136a86800aa5c6c19a9488c053023aaeec9106184"
+        "bc84bb0b762d9f82cd890a24b14e90e9f933428fec9f4e3b3f42dbd50a696351"
     )
 
 

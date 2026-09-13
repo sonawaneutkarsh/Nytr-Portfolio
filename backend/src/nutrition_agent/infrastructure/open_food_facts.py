@@ -14,11 +14,13 @@ import httpx
 
 from nutrition_agent.domain.nutrition.barcodes import (
     BARCODE_IMPORT_POLICY_VERSION,
+    BarcodeBasisReason,
     BarcodeNutritionBasis,
     BarcodeProduct,
     BarcodeProductIncomplete,
     BarcodeProductNotFound,
     BarcodeProviderUnavailable,
+    display_unit,
     validate_barcode,
 )
 from nutrition_agent.domain.nutrition.custom_foods import (
@@ -31,7 +33,11 @@ from nutrition_agent.infrastructure.http_transport import RateLimiter
 OPEN_FOOD_FACTS_PROVIDER = "open_food_facts"
 OPEN_FOOD_FACTS_DATA_LICENSE = "ODbL-1.0/DbCL-1.0"
 _BASE_URL = "https://world.openfoodfacts.org"
-_FIELDS = "code,product_name,brands,serving_size,nutrition"
+_FIELDS = (
+    "code,product_name,brands,serving_size,serving_quantity,serving_quantity_unit,"
+    "product_quantity,product_quantity_unit,quantity,packagings,"
+    "nutrition,nutriments,nutrition_data_per"
+)
 _NUTRIENTS = {
     "calories_kcal": ("energy-kcal", "kcal"),
     "protein_g": ("proteins", "g"),
@@ -109,8 +115,37 @@ def _parse_product(scanned: str, payload: object, fetched_at: datetime) -> Barco
     serving_size = _clean_text(product.get("serving_size"))
     nutrition_object = product.get("nutrition")
     if not isinstance(nutrition_object, Mapping):
-        raise BarcodeProductIncomplete("barcode product has no nutrition object")
-    basis, source_set, values = _select_exact_nutrition(nutrition_object, serving_size)
+        nutrition_object = _legacy_nutrition(product)
+    serving = _physical_serving(product)
+    package_unit = _product_physical_unit(product)
+    basis, source_set, values = _select_exact_nutrition(
+        nutrition_object, serving_size, serving, package_unit
+    )
+    # Keep the source basis explicit, but freeze the usable manufacturer serving
+    # as the food's physical serving basis. No scoop/string mass inference.
+    amount, unit = _basis_amount_and_unit(basis)
+    description = (
+        serving_size if basis is BarcodeNutritionBasis.PER_SERVING else _basis_description(basis)
+    )
+    reason = _standardized_basis_reason(basis)
+    if serving is not None:
+        physical_amount, physical_unit = serving
+        if basis is BarcodeNutritionBasis.PER_SERVING or physical_unit == unit:
+            factor = (
+                Decimal(1)
+                if basis is BarcodeNutritionBasis.PER_SERVING
+                else physical_amount / Decimal(100)
+            )
+            values = {
+                key: value * factor if value is not None else None for key, value in values.items()
+            }
+            amount, unit = str(physical_amount), physical_unit
+            description = f"1 serving ({physical_amount} {display_unit(physical_unit)})"
+            reason = (
+                BarcodeBasisReason.STRUCTURED_SERVING_VOLUME
+                if physical_unit == "ml"
+                else BarcodeBasisReason.STRUCTURED_SERVING_MASS
+            )
     try:
         nutrition = ManualNutritionFacts(**values)
     except (TypeError, ValueError) as exc:
@@ -121,7 +156,13 @@ def _parse_product(scanned: str, payload: object, fetched_at: datetime) -> Barco
         "product_name": name,
         "brands": brand,
         "serving_size": serving_size,
+        "product_quantity": _canonical_number(product.get("product_quantity")),
+        "product_quantity_unit": _clean_text(product.get("product_quantity_unit")),
+        "package_physical_unit": package_unit,
         "basis": basis.value,
+        "import_policy": BARCODE_IMPORT_POLICY_VERSION,
+        "serving_amount": amount,
+        "serving_unit": unit,
         "source": source_set.get("source"),
         "preparation": source_set.get("preparation"),
         "nutrients": {
@@ -141,13 +182,8 @@ def _parse_product(scanned: str, payload: object, fetched_at: datetime) -> Barco
         data_license=OPEN_FOOD_FACTS_DATA_LICENSE,
         nutrition_basis=basis.value,
     )
-    if basis is BarcodeNutritionBasis.PER_SERVING:
-        if serving_size is None:
-            raise BarcodeProductIncomplete("per-serving nutrition has no serving description")
-        description = serving_size
-    else:
-        description = _basis_description(basis)
-    amount, unit = _basis_amount_and_unit(basis)
+    if description is None:
+        raise BarcodeProductIncomplete("per-serving nutrition has no serving description")
     return BarcodeProduct(
         policy_version=BARCODE_IMPORT_POLICY_VERSION,
         name=name,
@@ -157,11 +193,98 @@ def _parse_product(scanned: str, payload: object, fetched_at: datetime) -> Barco
         serving_unit=unit,
         nutrition=nutrition,
         provenance=provenance,
+        basis_reason=reason.value,
     )
 
 
+def _standardized_basis_reason(basis: BarcodeNutritionBasis) -> BarcodeBasisReason:
+    """Classify why a standardized basis had to be used, with no source detail."""
+
+    if basis is BarcodeNutritionBasis.PER_SERVING:
+        return BarcodeBasisReason.SOURCE_SERVING_WITHOUT_PHYSICAL_QUANTITY
+    if basis is BarcodeNutritionBasis.PER_100ML:
+        return BarcodeBasisReason.EXPLICIT_PER_100ML
+    return BarcodeBasisReason.NO_TRUSTWORTHY_VOLUME_EVIDENCE
+
+
+def _physical_serving(product: Mapping[object, object]) -> tuple[Decimal, str] | None:
+    quantity = _decimal(product.get("serving_quantity"), Decimal(1))
+    unit = _normalized_unit(product.get("serving_quantity_unit"))
+    if quantity is None or quantity <= 0 or unit not in {"g", "ml"}:
+        return None
+    if _clean_text(product.get("serving_size")) is None:
+        return None
+    return quantity, unit
+
+
+def _product_physical_unit(product: Mapping[object, object]) -> str | None:
+    """Return only a structured mass/volume hint; never parse product names or free text.
+
+    OFF normalizes the whole-product quantity to g or ml. A structured packaging
+    quantity can provide the same kind-only hint when every usable component agrees.
+    The amount is deliberately not used as a serving and no density conversion occurs.
+    """
+
+    quantity = _decimal(product.get("product_quantity"), Decimal(1))
+    unit = _normalized_unit(product.get("product_quantity_unit"), kind_only=True)
+    if quantity is not None and quantity > 0 and unit is not None:
+        return unit
+
+    packagings = product.get("packagings")
+    if not isinstance(packagings, list):
+        return None
+    units: set[str] = set()
+    for packaging in packagings:
+        if not isinstance(packaging, Mapping):
+            continue
+        amount = _decimal(packaging.get("quantity_per_unit_value"), Decimal(1))
+        structured_unit = _normalized_unit(packaging.get("quantity_per_unit_unit"), kind_only=True)
+        if amount is not None and amount > 0 and structured_unit is not None:
+            units.add(structured_unit)
+    return units.pop() if len(units) == 1 else None
+
+
+def _legacy_nutrition(product: Mapping[object, object]) -> Mapping[object, object]:
+    """OFF's documented normalized suffix values use canonical g/kcal units.
+
+    Never read prepared/estimated fields or use contributor *_unit to reinterpret
+    normalized *_100g values. This fallback is only for the legacy schema.
+    """
+    raw = product.get("nutriments")
+    if not isinstance(raw, Mapping):
+        raise BarcodeProductIncomplete("barcode product has no nutrition object")
+    per = product.get("nutrition_data_per")
+    if per not in {"100g", "100ml", "serving"}:
+        raise BarcodeProductIncomplete("legacy nutrition basis is unspecified")
+    suffix = per
+    nutrients: dict[str, object] = {}
+    for source_name, expected_unit in _NUTRIENTS.values():
+        # _value ties the normalized value to contributed evidence, not a
+        # provider estimate. Modifiers such as '<' are not exact values.
+        if raw.get(f"{source_name}_value") is None or raw.get(f"{source_name}_modifier") not in (
+            None,
+            "",
+            "=",
+        ):
+            continue
+        value = raw.get(f"{source_name}_{suffix}")
+        if value is not None:
+            nutrients[source_name] = {
+                "value": value,
+                "unit": "g" if expected_unit == "mg" else expected_unit,
+            }
+    return {
+        "input_sets": [
+            {"source": "packaging", "preparation": "as_sold", "per": per, "nutrients": nutrients}
+        ]
+    }
+
+
 def _select_exact_nutrition(
-    nutrition: Mapping[object, object], serving_size: str | None
+    nutrition: Mapping[object, object],
+    serving_size: str | None,
+    physical_serving: tuple[Decimal, str] | None = None,
+    product_physical_unit: str | None = None,
 ) -> tuple[BarcodeNutritionBasis, Mapping[object, object], dict[str, Decimal | None]]:
     raw_sets = nutrition.get("input_sets")
     if not isinstance(raw_sets, list):
@@ -174,10 +297,15 @@ def _select_exact_nutrition(
         and value.get("preparation") == "as_sold"
         and isinstance(value.get("nutrients"), Mapping)
     ]
-    # Standardized packaging sets remain tied to their explicit mass/volume basis.
-    # Some provider records duplicate standardized values into a serving input set,
-    # so serving is a fail-closed fallback rather than a preferred source.
-    ordered_bases = [BarcodeNutritionBasis.PER_100G, BarcodeNutritionBasis.PER_100ML]
+    # Prefer an explicit packaging serving only when its physical quantity agrees
+    # with product serving metadata. Never combine conflicting sets or fabricate
+    # protein by selecting a partial standardized set ahead of a verified serving.
+    physical_unit = physical_serving[1] if physical_serving is not None else product_physical_unit
+    ordered_bases = (
+        [BarcodeNutritionBasis.PER_100ML, BarcodeNutritionBasis.PER_100G]
+        if physical_unit == "ml"
+        else [BarcodeNutritionBasis.PER_100G, BarcodeNutritionBasis.PER_100ML]
+    )
     if serving_size is not None:
         ordered_bases.append(BarcodeNutritionBasis.PER_SERVING)
     source_per = {
@@ -185,6 +313,38 @@ def _select_exact_nutrition(
         BarcodeNutritionBasis.PER_100G: "100g",
         BarcodeNutritionBasis.PER_100ML: "100ml",
     }
+    if physical_serving is not None:
+        amount, unit = physical_serving
+        # A source with an explicit contradictory serving quantity cannot be
+        # assigned the product-level serving mass, even as a last fallback.
+        candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.get("per") != "serving"
+            or (candidate.get("per_quantity") is None and candidate.get("per_unit") is None)
+            or (
+                _decimal(candidate.get("per_quantity"), Decimal(1)) == amount
+                and _normalized_unit(candidate.get("per_unit")) == unit
+            )
+        ]
+        verified_servings = []
+        for candidate in candidates:
+            if candidate.get("per") != "serving":
+                continue
+            per_quantity = candidate.get("per_quantity")
+            per_unit = candidate.get("per_unit")
+            if (per_quantity is None and per_unit is None) or (
+                _decimal(per_quantity, Decimal(1)) == amount and _normalized_unit(per_unit) == unit
+            ):
+                verified_servings.append(candidate)
+        if verified_servings:
+            candidates = [
+                candidate for candidate in candidates if candidate.get("per") != "serving"
+            ] + verified_servings
+            ordered_bases = [
+                BarcodeNutritionBasis.PER_SERVING,
+                *ordered_bases,
+            ]
     for basis in ordered_bases:
         parsed = [
             (candidate, _nutrition_values(candidate))
@@ -214,7 +374,7 @@ def _nutrition_values(source_set: Mapping[object, object]) -> dict[str, Decimal 
     result: dict[str, Decimal | None] = {}
     for output_name, (source_name, expected_unit) in _NUTRIENTS.items():
         raw = nutrients.get(source_name)
-        if not isinstance(raw, Mapping):
+        if not isinstance(raw, Mapping) or raw.get("modifier") not in (None, "", "="):
             result[output_name] = None
             continue
         unit = _clean_text(raw.get("unit"))
@@ -245,13 +405,25 @@ def _canonical_nutrient(
 
 
 def _basis_description(basis: BarcodeNutritionBasis) -> str:
-    return "100 ml" if basis is BarcodeNutritionBasis.PER_100ML else "100 g"
+    return "100 mL" if basis is BarcodeNutritionBasis.PER_100ML else "100 g"
 
 
 def _basis_amount_and_unit(basis: BarcodeNutritionBasis) -> tuple[str, str]:
     if basis is BarcodeNutritionBasis.PER_SERVING:
         return "1", "serving"
     return "100", "ml" if basis is BarcodeNutritionBasis.PER_100ML else "g"
+
+
+def _normalized_unit(value: object, *, kind_only: bool = False) -> str | None:
+    unit = _clean_text(value)
+    if unit is None:
+        return None
+    normalized = unit.casefold()
+    if normalized in {"ml", "milliliter", "milliliters", "cl", "l"}:
+        return "ml" if kind_only or normalized == "ml" else None
+    if normalized in {"g", "gram", "grams", "kg"}:
+        return "g" if kind_only or normalized == "g" else None
+    return None
 
 
 def _decimal(value: object, multiplier: Decimal) -> Decimal | None:

@@ -10,6 +10,10 @@ from uuid import uuid4
 
 import pytest
 
+from nutrition_agent.application.manual_foods import (
+    AdjustManualFoodUseCase,
+    RecordManualFoodUseCase,
+)
 from nutrition_agent.db.sql_repos import SqlConsumptionRepository, SqlCustomFoodRepository
 from nutrition_agent.domain.nutrition.custom_foods import (
     CustomFoodAuthority,
@@ -24,6 +28,9 @@ from tests.migration_helpers import apply_migrations
 
 DATABASE_URL = os.environ.get("STACKS_TEST_DATABASE_URL")
 MIGRATION = Path(__file__).resolve().parents[2] / "migrations" / "0013_custom_food.sql"
+ADJUSTMENT_MIGRATION = (
+    Path(__file__).resolve().parents[2] / "migrations" / "0019_manual_food_adjustments.sql"
+)
 pytestmark = pytest.mark.skipif(DATABASE_URL is None, reason="scratch PostgreSQL required")
 
 
@@ -64,6 +71,95 @@ def test_migration_reapplies_and_privileges_are_append_only() -> None:
                 (table, table, table, table),
             )
             assert cur.fetchone() == (True, True, False, False)
+        cur.execute(ADJUSTMENT_MIGRATION.read_text())
+        cur.execute(
+            """
+            SELECT has_table_privilege('authenticated', %s, 'SELECT'),
+                   has_table_privilege('authenticated', %s, 'INSERT'),
+                   has_table_privilege('authenticated', %s, 'UPDATE'),
+                   has_table_privilege('authenticated', %s, 'DELETE')
+            """,
+            ("manual_food_consumption_adjustment",) * 4,
+        )
+        assert cur.fetchone() == (True, True, False, False)
+
+
+def test_sql_correction_replaces_active_totals_then_void_removes_without_deleting() -> None:
+    psycopg = pytest.importorskip("psycopg")
+    apply_migrations(DATABASE_URL)  # type: ignore[arg-type]
+    owner = uuid4()
+    repo = _repo()
+    version = CustomFoodVersion(
+        **{
+            **_version(owner).__dict__,
+            "nutrition": ManualNutritionFacts(
+                calories_kcal=Decimal("400"), protein_g=Decimal("20")
+            ),
+        }
+    )
+    repo.save_version(version, create_identity=True)
+
+    class IDs:
+        def new_id(self):
+            return uuid4()
+
+    class FixedClock:
+        def now(self):
+            return datetime(2026, 9, 4, 13, tzinfo=UTC)
+
+    original = (
+        RecordManualFoodUseCase(repo, FixedClock(), IDs())
+        .execute(
+            user_id=owner,
+            food_id=version.food_id,
+            food_version_id=version.version_id,
+            consumed_amount=Decimal("1"),
+            consumed_unit="serving",
+            meal_period=ManualMealPeriod.LUNCH,
+            client_event_id=uuid4(),
+        )
+        .entry
+    )
+    adjusted = AdjustManualFoodUseCase(repo, FixedClock(), IDs())
+    corrected = adjusted.correct(
+        user_id=owner,
+        entry_id=original.entry_id,
+        amount=Decimal("1.5"),
+        unit="serving",
+        client_event_id=uuid4(),
+    )
+    assert corrected.replacement is not None
+    assert DATABASE_URL is not None
+    ledger = SqlConsumptionRepository(DATABASE_URL).list_eaten_evidence(
+        owner, datetime(2026, 9, 4, tzinfo=UTC), datetime(2026, 9, 5, tzinfo=UTC)
+    )
+    assert [item.entry_id for item in ledger] == [corrected.replacement.entry_id]
+    assert ledger[0].calories_kcal == Decimal("600.0")
+    assert ledger[0].serving_description == "one bowl"
+    assert ledger[0].serving_amount == Decimal("1")
+    assert ledger[0].serving_unit == "serving"
+    assert repo.find_active_consumption(uuid4(), corrected.replacement.entry_id) is None
+
+    adjusted.void(user_id=owner, entry_id=corrected.replacement.entry_id, client_event_id=uuid4())
+    assert (
+        SqlConsumptionRepository(DATABASE_URL).list_eaten_evidence(
+            owner, datetime(2026, 9, 4, tzinfo=UTC), datetime(2026, 9, 5, tzinfo=UTC)
+        )
+        == ()
+    )
+    with __import__("psycopg").connect(DATABASE_URL) as conn, conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM manual_food_consumption WHERE user_id=%s", (str(owner),))
+        assert cur.fetchone()[0] == 2
+        cur.execute(
+            "SELECT COUNT(*) FROM manual_food_consumption_adjustment WHERE user_id=%s",
+            (str(owner),),
+        )
+        assert cur.fetchone()[0] == 2
+    with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
+        cur.execute("SET LOCAL ROLE authenticated")
+        cur.execute("SELECT set_config('request.jwt.claim.sub', %s, true)", (str(uuid4()),))
+        cur.execute("SELECT COUNT(*) FROM manual_food_consumption_adjustment")
+        assert cur.fetchone()[0] == 0
 
 
 def test_sql_version_snapshot_replay_owner_isolation_and_mixed_ledger() -> None:

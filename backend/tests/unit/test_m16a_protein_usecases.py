@@ -62,7 +62,7 @@ def _target(*, version_id: int = 1, created_at: datetime | None = None, protein=
     )
 
 
-def _sample(sample_id: int, measured_at: datetime, kilograms: str = "67.494852"):
+def _sample(sample_id: int, measured_at: datetime, kilograms: str = "68.038856"):
     return BodyMassSample(
         sample_uuid=UUID(int=sample_id),
         value_kg=Decimal(kilograms),
@@ -105,7 +105,7 @@ def test_proposal_selects_latest_valid_active_sample_and_replays_original() -> N
             added=(
                 _sample(1, NOW - timedelta(days=8)),
                 _sample(2, NOW - timedelta(days=2), "66"),
-                _sample(3, NOW - timedelta(days=1), "67.494852"),
+                _sample(3, NOW - timedelta(days=1), "68.038856"),
                 _sample(4, NOW + timedelta(days=2), "90"),
             )
         ),
@@ -142,7 +142,7 @@ def test_proposal_requires_sample_and_suppresses_no_change_proposal() -> None:
         create.execute(user_id=USER)
 
     bodies.apply_batch(USER, _batch(added=(_sample(1, NOW),)))
-    matching = _target(version_id=2, created_at=NOW - timedelta(days=1), protein="119.0")
+    matching = _target(version_id=2, created_at=NOW - timedelta(days=1), protein="120.0")
     targets.save_approved(matching, "existing protein", matching.created_at)
     with pytest.raises(ProteinProposalUnavailable, match="already matches"):
         create.execute(user_id=USER)
@@ -208,7 +208,7 @@ def test_approval_appends_floor_and_preserves_prior_then_stale_approval_fails() 
         for goal in targets.policies[resulting_id].goals_jsonb
         if goal["nutrient"] == "protein_g"
     )
-    assert protein == {"nutrient": "protein_g", "kind": "floor", "value": "119", "weight": "1"}
+    assert protein == {"nutrient": "protein_g", "kind": "floor", "value": "120", "weight": "1"}
 
     clock.value += timedelta(seconds=1)
     bodies.apply_batch(USER, _batch(added=(_sample(2, clock.value, "70"),)))

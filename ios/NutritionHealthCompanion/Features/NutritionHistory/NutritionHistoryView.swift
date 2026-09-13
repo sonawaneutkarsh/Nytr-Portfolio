@@ -16,7 +16,7 @@ struct NutritionHistoryView: View {
                 ProgressView("Loading nutrition history…")
             case .error(let message):
                 Section {
-                    Text(message).foregroundStyle(.orange)
+                    NytrStatusLabel(title: message, systemImage: "exclamationmark.triangle")
                     Button("Try Again") { Task { await viewModel.refresh() } }
                 }
             case .signedOut:
@@ -37,12 +37,18 @@ struct NutritionHistoryView: View {
     @ViewBuilder
     private func summary(_ value: NutritionHistorySummaryResponse) -> some View {
         Section("Last 7 Days") {
-            LabeledContent("Days recorded", value: String(value.daysWithConsumption))
+            NytrMetricRow("Days recorded", value: String(value.daysWithConsumption))
             if let calories = value.knownCaloriesTotal {
-                LabeledContent("Known calories", value: "\(calories) kcal")
+                NytrMetricRow(
+                    "Known calories",
+                    value: "\(NytrNumberFormat.whole(calories) ?? calories) kcal"
+                )
             }
             if let protein = value.knownProteinGTotal {
-                LabeledContent("Known protein", value: "\(protein) g")
+                NytrMetricRow(
+                    "Known protein",
+                    value: "\(NytrNumberFormat.whole(protein) ?? protein) g"
+                )
             }
             if value.daysPartial > 0 || value.daysUnavailable > 0 {
                 Text("Some days contain partial or unavailable nutrition evidence.")
@@ -102,14 +108,18 @@ struct NutritionHistoryView: View {
         partial: Bool
     ) -> some View {
         if let known {
-            let prefix = partial ? "\(known)+" : known
+            let displayed = NytrNumberFormat.whole(known) ?? known
+            let prefix = partial ? "\(displayed)+" : displayed
             if let target {
-                LabeledContent(label, value: "\(prefix) / \(target) \(unit)")
+                NytrMetricRow(
+                    label,
+                    value: "\(prefix) / \(NytrNumberFormat.whole(target) ?? target) \(unit)"
+                )
             } else {
-                LabeledContent(label, value: "\(prefix) \(unit) known")
+                NytrMetricRow(label, value: "\(prefix) \(unit) known")
             }
         } else {
-            LabeledContent(label, value: "Unavailable")
+            NytrMetricRow(label, value: "Unavailable")
         }
     }
 }

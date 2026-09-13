@@ -37,6 +37,7 @@ from nutrition_agent.application.protein_target import (
 )
 from nutrition_agent.domain.next_meal import NextMealRecommendation
 from nutrition_agent.domain.next_meal_consumption import NextMealConsumptionEntry
+from nutrition_agent.domain.nutrition.quality import candidate_quality
 from nutrition_agent.domain.protein_target import (
     DecideProteinProposalOutcome,
     ProteinProposalDecisionValue,
@@ -129,6 +130,7 @@ def _next_meal_content(value: NextMealRecommendation, *, created: bool | None) -
         "inputs_digest": value.inputs_digest,
         "artifact_sha256": value.artifact_sha256,
         "artifact": value.artifact_jsonb,
+        "nutrition_quality": candidate_quality(value.artifact_jsonb.get("selected")),
     }
     if created is not None:
         content["created"] = created

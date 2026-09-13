@@ -5,6 +5,7 @@ from uuid import UUID
 import pytest
 
 from nutrition_agent.application.manual_foods import (
+    AdjustManualFoodUseCase,
     CreateCustomFoodUseCase,
     ListCustomFoodsUseCase,
     RecordManualFoodUseCase,
@@ -129,6 +130,68 @@ def test_idempotent_replay_returns_original_and_conflict_fails() -> None:
     with pytest.raises(DuplicateManualFoodError):
         use_case.execute(**{**kwargs, "consumed_amount": Decimal("2")})
     assert repo.consumptions[(UUID(int=100), UUID(int=503))] == first.entry
+
+
+def test_quantity_correction_and_void_are_append_only_and_idempotent() -> None:
+    repo, version, clock, ids = setup_food()
+    original = (
+        RecordManualFoodUseCase(repo, clock, ids)
+        .execute(
+            user_id=UUID(int=100),
+            food_id=version.food_id,
+            food_version_id=version.version_id,
+            consumed_amount=Decimal("1"),
+            consumed_unit="serving",
+            meal_period=ManualMealPeriod.LUNCH,
+            client_event_id=UUID(int=510),
+        )
+        .entry
+    )
+    adjust = AdjustManualFoodUseCase(repo, clock, ids)
+    preview = adjust.preview(
+        user_id=UUID(int=100),
+        entry_id=original.entry_id,
+        amount=Decimal("1.5"),
+        unit="serving",
+    )
+    assert preview[1] == Decimal("1.5")
+    assert preview[3].calories_kcal == Decimal("750.0")
+
+    corrected = adjust.correct(
+        user_id=UUID(int=100),
+        entry_id=original.entry_id,
+        amount=Decimal("1.5"),
+        unit="serving",
+        client_event_id=UUID(int=511),
+    )
+    assert corrected.created
+    assert corrected.replacement is not None
+    assert corrected.replacement.nutrition.calories_kcal == Decimal("750.0")
+    assert repo.find_active_consumption(UUID(int=100), original.entry_id) is None
+    assert (
+        repo.find_active_consumption(UUID(int=100), corrected.replacement.entry_id)
+        == corrected.replacement
+    )
+
+    replay = adjust.correct(
+        user_id=UUID(int=100),
+        entry_id=original.entry_id,
+        amount=Decimal("1.5"),
+        unit="serving",
+        client_event_id=UUID(int=511),
+    )
+    assert not replay.created
+    assert replay.replacement == corrected.replacement
+
+    removed = adjust.void(
+        user_id=UUID(int=100),
+        entry_id=corrected.replacement.entry_id,
+        client_event_id=UUID(int=512),
+    )
+    assert removed.created and removed.replacement is None
+    assert repo.find_active_consumption(UUID(int=100), corrected.replacement.entry_id) is None
+    assert len(repo.consumptions) == 2
+    assert len(repo.adjustments) == 2
 
 
 def test_owner_isolation_and_unit_validation() -> None:

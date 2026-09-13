@@ -125,8 +125,9 @@ final class TargetReviewViewModel {
         latestTargetPolicy = nil
         initialTargetMessage = nil
         resetProteinState()
-        await loadLatestGoal(expectedSubject: subject)
-        await loadProteinState(expectedSubject: subject)
+        async let goal: Void = loadLatestGoal(expectedSubject: subject)
+        async let protein: Void = loadProteinState(expectedSubject: subject)
+        _ = await (goal, protein)
     }
 
     func selectGoalDirection(_ direction: GoalDirectionDTO) {
@@ -457,8 +458,11 @@ final class TargetReviewViewModel {
         proteinDecisionResult = nil
         isTargetPolicyResolved = false
 
+        async let targetRequest = backend.fetchLatestTargetPolicy()
+        async let proposalRequest = backend.fetchLatestProteinProposal()
+
         do {
-            let target = try await backend.fetchLatestTargetPolicy()
+            let target = try await targetRequest
             guard subject == expectedSubject else { return }
             latestTargetPolicy = target
             isTargetPolicyResolved = true
@@ -474,7 +478,7 @@ final class TargetReviewViewModel {
         }
 
         do {
-            let proposal = try await backend.fetchLatestProteinProposal()
+            let proposal = try await proposalRequest
             guard subject == expectedSubject else { return }
             proteinPhase = proposal.map(ProteinPhase.proposal) ?? .noProposal
         } catch BackendError.unauthorized {

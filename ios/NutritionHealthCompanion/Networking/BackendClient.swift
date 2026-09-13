@@ -1,6 +1,8 @@
 import Foundation
 
 protocol BackendClient: Sendable {
+    func previewFood(_ request: FoodPreviewRequest) async throws -> FoodPreviewResponse
+    func fetchReviewSnapshot(asOfDate: Date, timezone: String) async throws -> OnDeviceReviewSnapshot
     /// Submits one batch. Resolves the bearer token via AccessTokenProvider.
     func submitBatch(
         added: [BodyMassSampleDTO], deletions: [DeletedSampleDTO]
@@ -22,18 +24,28 @@ protocol BackendClient: Sendable {
     func generateAIReview(asOfDate: Date, timezone: String) async throws
         -> AIReviewResponse
     func fetchBodyGoals(asOfDate: Date, timezone: String) async throws -> BodyGoalsResponse
-    func saveBodyProfile(heightCm: String, targetWeightKg: String?) async throws -> BodyProfileDTO
-    func recordWaist(value: String, unit: String, measuredAt: Date) async throws -> WaistMeasurementDTO
-    func fetchStartingCalorieEstimate(asOfDate: Date, timezone: String) async throws
-        -> StartingCalorieEstimateDTO
+    func saveBodyGoalProfile(_ request: SaveBodyGoalProfileRequest) async throws
+        -> BodyGoalProfileDTO
+    func addWaistMeasurement(_ request: AddWaistRequest) async throws -> WaistMeasurementDTO
+    func generateStartingCalorieProposal(asOfDate: Date, timezone: String) async throws
+        -> StartingCalorieProposalDTO
+    func decideStartingCalorieProposal(proposalId: UUID, decision: String, clientEventId: UUID)
+        async throws -> StartingTargetDecisionResponse
     func fetchCustomFoods() async throws -> [CustomFoodVersionDTO]
     func createCustomFood(_ request: CreateCustomFoodRequestDTO) async throws
         -> CustomFoodVersionDTO
     func recordManualFood(_ request: ManualFoodConsumptionRequestDTO) async throws
         -> ManualFoodConsumptionResponse
+    func previewManualFoodCorrection(entryId: UUID, amount: String, unit: String) async throws
+        -> FoodPreviewResponse
+    func correctManualFood(entryId: UUID, request: ManualCorrectionRequest) async throws
+        -> ManualFoodAdjustmentResponse
+    func voidManualFood(entryId: UUID, clientEventId: UUID) async throws
+        -> ManualFoodAdjustmentResponse
     func lookupBarcodeFood(barcode: String) async throws -> BarcodeProductDTO
-    func importBarcodeFood(barcode: String, expectedPayloadSha256: String) async throws
-        -> ImportBarcodeFoodResponseDTO
+    func importBarcodeFood(
+        barcode: String, expectedPayloadSha256: String, ownerServing: OwnerServingRequestDTO?
+    ) async throws -> ImportBarcodeFoodResponseDTO
 
     func fetchDayPlan(date: Date) async throws -> DayPlanResponse
     func generateDayPlan(date: Date, timezone: String) async throws -> DayPlanResponse
@@ -107,6 +119,44 @@ protocol BackendClient: Sendable {
 /// those focused doubles source-compatible while new M7 doubles can override
 /// just the methods they need.
 extension BackendClient {
+    func previewFood(_ request: FoodPreviewRequest) async throws -> FoodPreviewResponse {
+        throw BackendError.retryable("Food preview unavailable")
+    }
+    func fetchReviewSnapshot(asOfDate: Date, timezone: String) async throws -> OnDeviceReviewSnapshot {
+        throw BackendError.retryable("Review snapshot unavailable")
+    }
+
+    func fetchBodyGoals(asOfDate: Date, timezone: String) async throws -> BodyGoalsResponse {
+        _ = (asOfDate, timezone)
+        throw BackendError.retryable("Body & Goals API is not implemented by this client")
+    }
+
+    func saveBodyGoalProfile(_ request: SaveBodyGoalProfileRequest) async throws
+        -> BodyGoalProfileDTO
+    {
+        _ = request
+        throw BackendError.retryable("Body & Goals API is not implemented by this client")
+    }
+
+    func addWaistMeasurement(_ request: AddWaistRequest) async throws -> WaistMeasurementDTO {
+        _ = request
+        throw BackendError.retryable("Body & Goals API is not implemented by this client")
+    }
+
+    func generateStartingCalorieProposal(asOfDate: Date, timezone: String) async throws
+        -> StartingCalorieProposalDTO
+    {
+        _ = (asOfDate, timezone)
+        throw BackendError.retryable("Body & Goals API is not implemented by this client")
+    }
+
+    func decideStartingCalorieProposal(proposalId: UUID, decision: String, clientEventId: UUID)
+        async throws -> StartingTargetDecisionResponse
+    {
+        _ = (proposalId, decision, clientEventId)
+        throw BackendError.retryable("Body & Goals API is not implemented by this client")
+    }
+
     func fetchCustomFoods() async throws -> [CustomFoodVersionDTO] {
         throw BackendError.retryable("manual-food API is not implemented by this client")
     }
@@ -124,14 +174,32 @@ extension BackendClient {
         _ = request
         throw BackendError.retryable("manual-food API is not implemented by this client")
     }
+    func previewManualFoodCorrection(entryId: UUID, amount: String, unit: String) async throws
+        -> FoodPreviewResponse
+    {
+        _ = (entryId, amount, unit)
+        throw BackendError.retryable("manual-food correction API is not implemented by this client")
+    }
+    func correctManualFood(entryId: UUID, request: ManualCorrectionRequest) async throws
+        -> ManualFoodAdjustmentResponse
+    {
+        _ = (entryId, request)
+        throw BackendError.retryable("manual-food correction API is not implemented by this client")
+    }
+    func voidManualFood(entryId: UUID, clientEventId: UUID) async throws
+        -> ManualFoodAdjustmentResponse
+    {
+        _ = (entryId, clientEventId)
+        throw BackendError.retryable("manual-food adjustment API is not implemented by this client")
+    }
     func lookupBarcodeFood(barcode: String) async throws -> BarcodeProductDTO {
         _ = barcode
         throw BackendError.retryable("barcode-food API is not implemented by this client")
     }
-    func importBarcodeFood(barcode: String, expectedPayloadSha256: String) async throws
-        -> ImportBarcodeFoodResponseDTO
-    {
-        _ = (barcode, expectedPayloadSha256)
+    func importBarcodeFood(
+        barcode: String, expectedPayloadSha256: String, ownerServing: OwnerServingRequestDTO?
+    ) async throws -> ImportBarcodeFoodResponseDTO {
+        _ = (barcode, expectedPayloadSha256, ownerServing)
         throw BackendError.retryable("barcode-food API is not implemented by this client")
     }
     func submitWorkoutBatch(
@@ -174,25 +242,6 @@ extension BackendClient {
     {
         _ = (asOfDate, timezone)
         throw BackendError.retryable("AI review API is not implemented by this client")
-    }
-
-    func fetchBodyGoals(asOfDate: Date, timezone: String) async throws -> BodyGoalsResponse {
-        _ = (asOfDate, timezone)
-        throw BackendError.retryable("body-goals API is not implemented by this client")
-    }
-    func saveBodyProfile(heightCm: String, targetWeightKg: String?) async throws -> BodyProfileDTO {
-        _ = (heightCm, targetWeightKg)
-        throw BackendError.retryable("body-goals API is not implemented by this client")
-    }
-    func recordWaist(value: String, unit: String, measuredAt: Date) async throws -> WaistMeasurementDTO {
-        _ = (value, unit, measuredAt)
-        throw BackendError.retryable("body-goals API is not implemented by this client")
-    }
-    func fetchStartingCalorieEstimate(asOfDate: Date, timezone: String) async throws
-        -> StartingCalorieEstimateDTO
-    {
-        _ = (asOfDate, timezone)
-        throw BackendError.retryable("body-goals API is not implemented by this client")
     }
 
     func fetchDayPlan(date: Date) async throws -> DayPlanResponse {
@@ -515,44 +564,52 @@ struct HTTPBackendClient: BackendClient {
 
     func fetchBodyGoals(asOfDate: Date, timezone: String) async throws -> BodyGoalsResponse {
         try await requestM7(
-            method: "GET",
-            path: "v1/body-goals",
+            method: "GET", path: "v1/body-goals",
             queryItems: [
                 URLQueryItem(name: "as_of_date", value: WireDay.string(from: asOfDate)),
                 URLQueryItem(name: "timezone", value: timezone),
-            ],
-            body: nil,
-            successStatusCodes: [200]
+            ], body: nil, successStatusCodes: [200]
         )
     }
 
-    func saveBodyProfile(heightCm: String, targetWeightKg: String?) async throws -> BodyProfileDTO {
-        let payload = BodyProfileRequestDTO(heightCm: heightCm, targetWeightKg: targetWeightKg)
-        return try await requestM7(
-            method: "PUT", path: "v1/body-goals/profile",
-            body: try JSONEncoder().encode(payload), successStatusCodes: [200]
-        )
-    }
-
-    func recordWaist(value: String, unit: String, measuredAt: Date) async throws -> WaistMeasurementDTO {
-        let payload = WaistMeasurementRequestDTO(
-            value: value, unit: unit, measuredAt: WireDate.iso8601UTC.string(from: measuredAt)
-        )
-        return try await requestM7(
-            method: "POST", path: "v1/body-goals/waist",
-            body: try JSONEncoder().encode(payload), successStatusCodes: [201]
-        )
-    }
-
-    func fetchStartingCalorieEstimate(asOfDate: Date, timezone: String) async throws
-        -> StartingCalorieEstimateDTO
+    func saveBodyGoalProfile(_ request: SaveBodyGoalProfileRequest) async throws
+        -> BodyGoalProfileDTO
     {
-        let payload = StartingCalorieEstimateRequestDTO(
+        try await requestM7(
+            method: "POST", path: "v1/body-goals/profile",
+            body: try JSONEncoder().encode(request), successStatusCodes: [201]
+        )
+    }
+
+    func addWaistMeasurement(_ request: AddWaistRequest) async throws -> WaistMeasurementDTO {
+        try await requestM7(
+            method: "POST", path: "v1/body-goals/waist",
+            body: try JSONEncoder().encode(request), successStatusCodes: [201]
+        )
+    }
+
+    func generateStartingCalorieProposal(asOfDate: Date, timezone: String) async throws
+        -> StartingCalorieProposalDTO
+    {
+        let payload = GenerateAIReviewRequestDTO(
             asOfDate: WireDay.string(from: asOfDate), timezone: timezone
         )
         return try await requestM7(
-            method: "POST", path: "v1/body-goals/starting-estimate",
-            body: try JSONEncoder().encode(payload), successStatusCodes: [200]
+            method: "POST", path: "v1/body-goals/starting-target/proposals",
+            body: try JSONEncoder().encode(payload), successStatusCodes: [200, 201]
+        )
+    }
+
+    func decideStartingCalorieProposal(proposalId: UUID, decision: String, clientEventId: UUID)
+        async throws -> StartingTargetDecisionResponse
+    {
+        let payload = StartingTargetDecisionRequest(
+            decision: decision, clientEventId: clientEventId
+        )
+        return try await requestM7(
+            method: "POST",
+            path: "v1/body-goals/starting-target/proposals/\(proposalId.uuidString.lowercased())/decision",
+            body: try JSONEncoder().encode(payload), successStatusCodes: [200, 201]
         )
     }
 
@@ -582,6 +639,40 @@ struct HTTPBackendClient: BackendClient {
         )
     }
 
+    func previewManualFoodCorrection(entryId: UUID, amount: String, unit: String) async throws
+        -> FoodPreviewResponse
+    {
+        try await requestM7(
+            method: "POST",
+            path: "v1/nutrition/manual-consumption/\(entryId.uuidString.lowercased())/preview-correction",
+            body: try JSONEncoder().encode(
+                ManualCorrectionPreviewRequest(amount: amount, unit: unit)
+            ),
+            successStatusCodes: [200]
+        )
+    }
+
+    func correctManualFood(entryId: UUID, request: ManualCorrectionRequest) async throws
+        -> ManualFoodAdjustmentResponse
+    {
+        try await requestM7(
+            method: "POST",
+            path: "v1/nutrition/manual-consumption/\(entryId.uuidString.lowercased())/corrections",
+            body: try JSONEncoder().encode(request), successStatusCodes: [200, 201]
+        )
+    }
+
+    func voidManualFood(entryId: UUID, clientEventId: UUID) async throws
+        -> ManualFoodAdjustmentResponse
+    {
+        try await requestM7(
+            method: "POST",
+            path: "v1/nutrition/manual-consumption/\(entryId.uuidString.lowercased())/void",
+            body: try JSONEncoder().encode(ManualVoidRequest(clientEventId: clientEventId)),
+            successStatusCodes: [200, 201]
+        )
+    }
+
     func lookupBarcodeFood(barcode: String) async throws -> BarcodeProductDTO {
         try await requestM7(
             method: "GET", path: "v1/nutrition/barcodes/\(barcode)", body: nil,
@@ -589,11 +680,11 @@ struct HTTPBackendClient: BackendClient {
         )
     }
 
-    func importBarcodeFood(barcode: String, expectedPayloadSha256: String) async throws
-        -> ImportBarcodeFoodResponseDTO
-    {
+    func importBarcodeFood(
+        barcode: String, expectedPayloadSha256: String, ownerServing: OwnerServingRequestDTO?
+    ) async throws -> ImportBarcodeFoodResponseDTO {
         let payload = ImportBarcodeFoodRequestDTO(
-            expectedPayloadSha256: expectedPayloadSha256
+            expectedPayloadSha256: expectedPayloadSha256, ownerServing: ownerServing
         )
         return try await requestM7(
             method: "POST", path: "v1/nutrition/barcodes/\(barcode)/import",
@@ -915,6 +1006,19 @@ struct HTTPBackendClient: BackendClient {
         )
     }
 
+    func previewFood(_ request: FoodPreviewRequest) async throws -> FoodPreviewResponse {
+        try await post(path: "v1/nutrition/food-preview", body: request)
+    }
+
+    func fetchReviewSnapshot(asOfDate: Date, timezone: String) async throws -> OnDeviceReviewSnapshot {
+        try await requestM7(
+            method: "GET", path: "v1/review/snapshot",
+            queryItems: [
+                URLQueryItem(name: "as_of_date", value: WireDay.string(from: asOfDate)),
+                URLQueryItem(name: "timezone", value: timezone),
+            ], body: nil, successStatusCodes: [200])
+    }
+
     private func post<Body: Encodable, Response: Decodable>(
         path: String, body: Body
     ) async throws -> Response {
@@ -968,6 +1072,9 @@ struct HTTPBackendClient: BackendClient {
         successStatusCodes: Set<Int>
     ) async throws -> Response {
         do {
+            #if DEBUG
+                let requestStarted = DispatchTime.now().uptimeNanoseconds
+            #endif
             var components = URLComponents(
                 url: baseURL.appending(path: path), resolvingAgainstBaseURL: false)
             if !queryItems.isEmpty {
@@ -978,6 +1085,9 @@ struct HTTPBackendClient: BackendClient {
             }
 
             let token = try await auth.validAccessToken()
+            #if DEBUG
+                let authenticationFinished = DispatchTime.now().uptimeNanoseconds
+            #endif
             var request = URLRequest(url: url)
             request.httpMethod = method
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -986,12 +1096,27 @@ struct HTTPBackendClient: BackendClient {
                 request.httpBody = body
             }
             let (data, response) = try await session.data(for: request)
-            return try Self.decodeM7(
+            #if DEBUG
+                let transportFinished = DispatchTime.now().uptimeNanoseconds
+            #endif
+            let decoded = try Self.decodeM7(
                 Response.self,
                 data: data,
                 response: response,
                 successStatusCodes: successStatusCodes
             )
+            #if DEBUG
+                let decodingFinished = DispatchTime.now().uptimeNanoseconds
+                Self.logTiming(
+                    method: method,
+                    responseType: Response.self,
+                    authenticationNanoseconds: authenticationFinished - requestStarted,
+                    transportNanoseconds: transportFinished - authenticationFinished,
+                    decodingNanoseconds: decodingFinished - transportFinished,
+                    totalNanoseconds: decodingFinished - requestStarted
+                )
+            #endif
+            return decoded
         } catch let error as BackendError {
             throw error
         } catch is AuthProviderError {
@@ -1000,6 +1125,28 @@ struct HTTPBackendClient: BackendClient {
             throw BackendError.retryable(String(describing: error))
         }
     }
+
+    #if DEBUG
+        private static func logTiming<Response>(
+            method: String,
+            responseType: Response.Type,
+            authenticationNanoseconds: UInt64,
+            transportNanoseconds: UInt64,
+            decodingNanoseconds: UInt64,
+            totalNanoseconds: UInt64
+        ) {
+            func milliseconds(_ value: UInt64) -> String {
+                String(format: "%.1f", Double(value) / 1_000_000)
+            }
+            print(
+                "[NytrTiming] \(method) \(String(describing: responseType)) "
+                    + "auth=\(milliseconds(authenticationNanoseconds))ms "
+                    + "transport=\(milliseconds(transportNanoseconds))ms "
+                    + "decode=\(milliseconds(decodingNanoseconds))ms "
+                    + "total=\(milliseconds(totalNanoseconds))ms"
+            )
+        }
+    #endif
 
     private static func decodeM7<Response: Decodable>(
         _ type: Response.Type,

@@ -47,7 +47,7 @@ def _token(subject: str = SUBJECT_A, **claims: object) -> str:
 def _sample_raw(uuid_int: int = 1) -> dict[str, object]:
     return {
         "sample_uuid": f"00000000-0000-0000-0000-{uuid_int:012x}",
-        "value": "72.000",
+        "value": "68.039",
         "sample_start": "2026-08-21T07:12:00+00:00",
         "sample_end": "2026-08-21T07:12:00+00:00",
     }
@@ -153,7 +153,7 @@ def test_valid_batch_accepted_with_counts_and_latest(client: TestClient) -> None
     assert body["accepted_added"] == 1
     assert body["duplicate_added"] == 0
     latest = body["latest_sample"]
-    assert latest is not None and latest["value_kg"] == "72.000"
+    assert latest is not None and latest["value_kg"] == "68.039"
 
 
 def test_duplicate_batch_upload_is_idempotent(client: TestClient) -> None:
@@ -235,10 +235,10 @@ def test_no_weight_values_in_logs(client: TestClient, caplog: pytest.LogCaptureF
     with caplog.at_level(logging.INFO, logger="nutrition_agent.health_api"):
         _sync(client, _token(), added=[_sample_raw()])
     joined = "\n".join(record.getMessage() for record in caplog.records)
-    assert "72.000" not in joined
+    assert "68.039" not in joined
     for record in caplog.records:
         for arg in record.args or ():
-            assert "72.000" not in str(arg)
+            assert "68.039" not in str(arg)
 
 
 def test_healthz_liveness_leaks_no_configuration(client: TestClient) -> None:
@@ -251,6 +251,11 @@ def test_openapi_schema_lists_only_expected_routes(client: TestClient) -> None:
     paths = set(client.get("/openapi.json").json()["paths"])
     assert paths == {
         "/healthz",
+        "/v1/body-goals",
+        "/v1/body-goals/profile",
+        "/v1/body-goals/waist",
+        "/v1/body-goals/starting-target/proposals",
+        "/v1/body-goals/starting-target/proposals/{proposal_id}/decision",
         "/v1/analytics/progress",
         "/v1/goal-policies",
         "/v1/goal-policies/latest",
@@ -258,10 +263,6 @@ def test_openapi_schema_lists_only_expected_routes(client: TestClient) -> None:
         "/v1/health/body-mass/sync",
         "/v1/health/sync-status",
         "/v1/health/workouts/sync",
-        "/v1/body-goals",
-        "/v1/body-goals/profile",
-        "/v1/body-goals/waist",
-        "/v1/body-goals/starting-estimate",
         "/v1/nutrition/daily-ledger",
         "/v1/nutrition/history",
         "/v1/nutrition/custom-foods",
@@ -269,10 +270,15 @@ def test_openapi_schema_lists_only_expected_routes(client: TestClient) -> None:
         "/v1/nutrition/barcodes/{barcode}",
         "/v1/nutrition/barcodes/{barcode}/import",
         "/v1/nutrition/manual-consumption",
+        "/v1/nutrition/manual-consumption/{entry_id}/preview-correction",
+        "/v1/nutrition/manual-consumption/{entry_id}/corrections",
+        "/v1/nutrition/manual-consumption/{entry_id}/void",
         "/v1/recommendations/next-meal",
         "/v1/recommendations/next-meal/latest",
         "/v1/recommendations/next-meal/{recommendation_id}/consumption",
         "/v1/review/current",
+        "/v1/review/snapshot",
+        "/v1/nutrition/food-preview",
         "/v1/plans/day",
         "/v1/plans/day/generate",
         "/v1/plans/{run_id}/consumption",

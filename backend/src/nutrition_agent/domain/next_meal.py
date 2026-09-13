@@ -12,7 +12,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from nutrition_agent.domain.configurable_meals import ConfigurableMealDefinition
-from nutrition_agent.domain.nutrition.ledger import DailyNutritionLedger, NutritionCompleteness
+from nutrition_agent.domain.nutrition.ledger import DailyNutritionLedger
 from nutrition_agent.domain.nutrition.targets import GoalKind, NutrientGoal, TargetSet
 from nutrition_agent.domain.planning.artifacts import candidate_document
 from nutrition_agent.domain.planning.context import MealContext
@@ -46,8 +46,8 @@ class NextMealPolicy:
     alternative_limit: int
 
 
-NEXT_MEAL_POLICY_V1 = NextMealPolicy(
-    policy_version="next-meal.remaining-opportunities.v1",
+NEXT_MEAL_POLICY_V2 = NextMealPolicy(
+    policy_version="next-meal.remaining-opportunities.v2",
     calorie_quantum=Decimal("1"),
     protein_quantum=Decimal("0.1"),
     alternative_limit=3,
@@ -164,7 +164,7 @@ def failure_artifact(
     status: NextMealStatus,
     reason_codes: tuple[str, ...],
     ledger: DailyNutritionLedger | None = None,
-    policy: NextMealPolicy = NEXT_MEAL_POLICY_V1,
+    policy: NextMealPolicy = NEXT_MEAL_POLICY_V2,
 ) -> dict[str, object]:
     artifact: dict[str, object] = {
         "artifact_kind": "next_meal_recommendation",
@@ -187,7 +187,7 @@ def allocate_remaining_targets(
     remaining_protein_g: Decimal,
     protein_kind: GoalKind,
     opportunity_count: int,
-    policy: NextMealPolicy = NEXT_MEAL_POLICY_V1,
+    policy: NextMealPolicy = NEXT_MEAL_POLICY_V2,
 ) -> TargetSet:
     """Allocate an equal share, with the final opportunity taking all remainder."""
 
@@ -243,13 +243,16 @@ def build_next_meal_artifact(
     configurable_meal_definitions: tuple[ConfigurableMealDefinition, ...],
     target_policy_version_id: UUID,
     target_policy_version: str,
-    policy: NextMealPolicy = NEXT_MEAL_POLICY_V1,
+    policy: NextMealPolicy = NEXT_MEAL_POLICY_V2,
 ) -> tuple[NextMealStatus, tuple[str, ...], dict[str, object]]:
     """Return a decision document; never mutates targets, ledger, menu, or plans."""
 
-    if ledger.nutrition_completeness is not NutritionCompleteness.COMPLETE:
+    missing_recorded_macros = any(
+        item.calories_kcal is None or item.protein_g is None for item in ledger.consumed_items
+    )
+    if missing_recorded_macros:
         status = NextMealStatus.INCOMPLETE_LEDGER_NUTRITION
-        reasons: tuple[str, ...] = ("consumed_nutrition_not_complete",)
+        reasons: tuple[str, ...] = ("recorded_calories_or_protein_missing",)
         return (
             status,
             reasons,
@@ -317,13 +320,19 @@ def build_next_meal_artifact(
         protein_kind = GoalKind(target.protein_goal_kind or "")
     except ValueError:
         calorie_kind = protein_kind = GoalKind.ADVISORY
+    remaining_calories = (
+        ledger.remaining_known_calories if ledger.consumed_item_count > 0 else target.calories_kcal
+    )
+    remaining_protein = (
+        ledger.remaining_known_protein_g if ledger.consumed_item_count > 0 else target.protein_g
+    )
     if (
         calorie_kind is not GoalKind.TARGET
         or protein_kind not in {GoalKind.TARGET, GoalKind.FLOOR}
         or target.calories_kcal is None
         or target.protein_g is None
-        or ledger.remaining_known_calories is None
-        or ledger.remaining_known_protein_g is None
+        or remaining_calories is None
+        or remaining_protein is None
     ):
         status = NextMealStatus.UNSUPPORTED_TARGET_SEMANTICS
         reasons = ("calorie_target_and_protein_target_or_floor_required",)
@@ -340,7 +349,7 @@ def build_next_meal_artifact(
                 policy=policy,
             ),
         )
-    if ledger.remaining_known_calories <= 0:
+    if remaining_calories <= 0:
         status = NextMealStatus.DAILY_CALORIE_TARGET_MET
         reasons = ("no_positive_calorie_remainder",)
         return (
@@ -429,8 +438,8 @@ def build_next_meal_artifact(
         slot_shares={},
     )
     eligibility_targets = allocate_remaining_targets(
-        remaining_calories=ledger.remaining_known_calories,
-        remaining_protein_g=max(ledger.remaining_known_protein_g, Decimal(0)),
+        remaining_calories=remaining_calories,
+        remaining_protein_g=max(remaining_protein, Decimal(0)),
         protein_kind=protein_kind,
         opportunity_count=1,
         policy=policy,
@@ -476,8 +485,8 @@ def build_next_meal_artifact(
         return status, reasons, artifact
 
     allocated = allocate_remaining_targets(
-        remaining_calories=ledger.remaining_known_calories,
-        remaining_protein_g=max(ledger.remaining_known_protein_g, Decimal(0)),
+        remaining_calories=remaining_calories,
+        remaining_protein_g=max(remaining_protein, Decimal(0)),
         protein_kind=protein_kind,
         opportunity_count=len(eligible_slots),
         policy=policy,
@@ -498,6 +507,14 @@ def build_next_meal_artifact(
 
     candidates = ranked.candidates[: 1 + policy.alternative_limit]
     allocation = allocated.goals
+    effective_ledger = ledger_evidence_document(ledger)
+    effective_ledger["remaining_calories"] = str(remaining_calories)
+    effective_ledger["remaining_protein_g"] = str(remaining_protein)
+    effective_ledger["macro_evidence_basis"] = (
+        "no_recorded_items_zero_consumed"
+        if ledger.consumed_item_count == 0
+        else "recorded_calories_and_protein"
+    )
     artifact = {
         "artifact_kind": "next_meal_recommendation",
         "artifact_version": "m16a.v1",
@@ -513,7 +530,7 @@ def build_next_meal_artifact(
         "target_policy_version_id": str(target_policy_version_id),
         "menu_snapshot_sha256": menu.snapshot_sha256,
         "nutrition_authorities": [value.value for value in ledger.authorities],
-        "ledger": ledger_evidence_document(ledger),
+        "ledger": effective_ledger,
         "remaining_opportunities": [
             {
                 "context": entry.context.value,
@@ -578,7 +595,7 @@ def recommendation_from_artifact(
 
 
 __all__ = [
-    "NEXT_MEAL_POLICY_V1",
+    "NEXT_MEAL_POLICY_V2",
     "NextMealPolicy",
     "NextMealRecommendation",
     "NextMealStatus",

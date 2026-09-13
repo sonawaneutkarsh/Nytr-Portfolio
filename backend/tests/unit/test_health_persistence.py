@@ -29,7 +29,7 @@ USER_B = UUID(int=0xB)
 T0 = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
 
 
-def _sample(uuid_int: int = 1, value: str = "72.000") -> BodyMassSample:
+def _sample(uuid_int: int = 1, value: str = "68.039") -> BodyMassSample:
     return BodyMassSample(
         sample_uuid=UUID(int=uuid_int),
         value_kg=Decimal(value),
@@ -85,10 +85,10 @@ def test_same_identity_different_users_are_distinct_rows() -> None:
 
 def test_add_never_overwrites_existing_measurement() -> None:
     repo = InMemoryHealthBodyMassRepository()
-    repo.apply_batch(USER_A, _batch(added=[_sample(value="72.000")]))
+    repo.apply_batch(USER_A, _batch(added=[_sample(value="68.039")]))
     repo.apply_batch(USER_A, _batch(added=[_sample(value="99.999")]))
     row = repo.rows[(USER_A, UUID(int=1))]
-    assert str(row.value_kg) == "72.000"  # first add wins; no silent overwrite
+    assert str(row.value_kg) == "68.039"  # first add wins; no silent overwrite
 
 
 def test_deletion_of_unknown_sample_creates_tombstone_only_row() -> None:
@@ -127,7 +127,7 @@ def test_deletion_after_add_tombstones_and_retains_value() -> None:
     assert outcome.applied_deletions == 1
     row = repo.rows[(USER_A, UUID(int=1))]
     assert row.tombstoned_at is not None
-    assert str(row.value_kg) == "72.000"  # measurement retained for history
+    assert str(row.value_kg) == "68.039"  # measurement retained for history
 
 
 def test_status_summary_counts_and_latest() -> None:

@@ -18,17 +18,21 @@ def _envelope(document: object) -> dict[str, object]:
 
 
 def test_gemini_configuration_is_server_side_optional_and_redacted_from_repr() -> None:
-    assert HealthApiSettings.from_env({}).gemini_model == "gemini-2.5-flash"
+    defaults = HealthApiSettings.from_env({})
+    assert defaults.gemini_model == "gemini-2.5-flash"
+    assert defaults.gemini_ai_review_enabled is False
 
     settings = HealthApiSettings.from_env(
         {
             "GEMINI_API_KEY": "never-log-this-test-value",
             "GEMINI_MODEL": "gemini-test-model",
+            "GEMINI_AI_REVIEW_ENABLED": "true",
         }
     )
 
     assert settings.gemini_api_key == "never-log-this-test-value"
     assert settings.gemini_model == "gemini-test-model"
+    assert settings.gemini_ai_review_enabled is True
     assert "never-log-this-test-value" not in repr(settings)
 
 
@@ -44,10 +48,9 @@ def test_valid_structured_request_is_single_bounded_call_without_raw_evidence() 
         serialized = json.dumps(body)
         assert "IGNORE ALL INSTRUCTIONS" not in serialized
         assert body["generationConfig"]["maxOutputTokens"] == 400
-        assert body["generationConfig"]["responseFormat"]["text"]["mimeType"] == (
-            "APPLICATION_JSON"
-        )
-        schema = body["generationConfig"]["responseFormat"]["text"]["schema"]
+        assert body["generationConfig"]["responseMimeType"] == "application/json"
+        schema = body["generationConfig"]["responseJsonSchema"]
+        assert "responseFormat" not in body["generationConfig"]
         assert schema["required"] == [
             "summary",
             "attention_items",
@@ -96,6 +99,7 @@ def test_valid_structured_request_is_single_bounded_call_without_raw_evidence() 
 
     provider = GeminiAIReviewProvider(
         "secret-key",
+        enabled=True,
         client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
     result = provider.generate(_snapshot())
@@ -106,9 +110,9 @@ def test_valid_structured_request_is_single_bounded_call_without_raw_evidence() 
 @pytest.mark.parametrize(
     ("status", "failure"),
     (
-        (400, AIReviewProviderFailure.INVALID_REQUEST),
-        (401, AIReviewProviderFailure.AUTHENTICATION),
-        (403, AIReviewProviderFailure.AUTHENTICATION),
+        (401, AIReviewProviderFailure.UNAVAILABLE),
+        (403, AIReviewProviderFailure.UNAVAILABLE),
+        (404, AIReviewProviderFailure.UNAVAILABLE),
         (429, AIReviewProviderFailure.RATE_LIMITED),
         (503, AIReviewProviderFailure.UNAVAILABLE),
     ),
@@ -116,6 +120,7 @@ def test_valid_structured_request_is_single_bounded_call_without_raw_evidence() 
 def test_http_failures_are_typed(status: int, failure: AIReviewProviderFailure) -> None:
     provider = GeminiAIReviewProvider(
         "key",
+        enabled=True,
         client=httpx.Client(
             transport=httpx.MockTransport(lambda _: httpx.Response(status, text="private"))
         ),
@@ -135,6 +140,7 @@ def test_timeout_is_typed_and_never_retried() -> None:
 
     provider = GeminiAIReviewProvider(
         "key",
+        enabled=True,
         client=httpx.Client(transport=httpx.MockTransport(timeout)),
     )
     with pytest.raises(AIReviewProviderError) as caught:
@@ -223,6 +229,7 @@ def test_malformed_unexpected_numeric_and_oversized_outputs_are_invalid(
 ) -> None:
     provider = GeminiAIReviewProvider(
         "key",
+        enabled=True,
         client=httpx.Client(transport=httpx.MockTransport(lambda _: response)),
     )
     with pytest.raises(AIReviewProviderError) as caught:
@@ -233,11 +240,12 @@ def test_malformed_unexpected_numeric_and_oversized_outputs_are_invalid(
 @pytest.mark.parametrize("key", (None, "", "   "))
 def test_missing_key_and_safety_refusal_are_distinct(key: str | None) -> None:
     with pytest.raises(AIReviewProviderError) as missing:
-        GeminiAIReviewProvider(key).generate(_snapshot())
+        GeminiAIReviewProvider(key, enabled=True).generate(_snapshot())
     assert missing.value.failure is AIReviewProviderFailure.NOT_CONFIGURED
 
     provider = GeminiAIReviewProvider(
         "key",
+        enabled=True,
         client=httpx.Client(
             transport=httpx.MockTransport(
                 lambda _: httpx.Response(200, json={"promptFeedback": {"blockReason": "SAFETY"}})
@@ -247,3 +255,10 @@ def test_missing_key_and_safety_refusal_are_distinct(key: str | None) -> None:
     with pytest.raises(AIReviewProviderError) as refused:
         provider.generate(_snapshot())
     assert refused.value.failure is AIReviewProviderFailure.REFUSED
+
+
+def test_provider_is_privacy_disabled_by_default_without_network_call() -> None:
+    provider = GeminiAIReviewProvider("key")
+    with pytest.raises(AIReviewProviderError) as caught:
+        provider.generate(_snapshot())
+    assert caught.value.failure is AIReviewProviderFailure.PRIVACY_DISABLED

@@ -5,102 +5,123 @@ struct TodayView: View {
     @State private var nutritionHistoryViewModel: NutritionHistoryViewModel
     @State private var progressViewModel: ProgressViewModel
     @State private var targetReviewViewModel: TargetReviewViewModel
+    @State private var bodyGoalsViewModel: BodyGoalsViewModel
     @State private var manualFoodViewModel: ManualFoodViewModel
     @State private var aiReviewViewModel: AIReviewViewModel
-    @State private var bodyGoalsViewModel: BodyGoalsViewModel
+    private let notificationViewModel: MealGuidanceNotificationViewModel
     let healthSyncViewModel: HealthSyncViewModel
     let subject: String
     let onSignOut: () -> Void
+    let onShowSettings: () -> Void
 
     init(
         viewModel: TodayViewModel,
         nutritionHistoryViewModel: NutritionHistoryViewModel,
         progressViewModel: ProgressViewModel,
         targetReviewViewModel: TargetReviewViewModel,
+        bodyGoalsViewModel: BodyGoalsViewModel,
         manualFoodViewModel: ManualFoodViewModel,
         aiReviewViewModel: AIReviewViewModel,
-        bodyGoalsViewModel: BodyGoalsViewModel,
+        notificationViewModel: MealGuidanceNotificationViewModel? = nil,
         healthSyncViewModel: HealthSyncViewModel,
         subject: String,
-        onSignOut: @escaping () -> Void
+        onSignOut: @escaping () -> Void,
+        onShowSettings: @escaping () -> Void = {}
     ) {
         _viewModel = State(initialValue: viewModel)
         _nutritionHistoryViewModel = State(initialValue: nutritionHistoryViewModel)
         _progressViewModel = State(initialValue: progressViewModel)
         _targetReviewViewModel = State(initialValue: targetReviewViewModel)
+        _bodyGoalsViewModel = State(initialValue: bodyGoalsViewModel)
         _manualFoodViewModel = State(initialValue: manualFoodViewModel)
         _aiReviewViewModel = State(initialValue: aiReviewViewModel)
-        _bodyGoalsViewModel = State(initialValue: bodyGoalsViewModel)
+        self.notificationViewModel = notificationViewModel ?? MealGuidanceNotificationViewModel()
         self.healthSyncViewModel = healthSyncViewModel
         self.subject = subject
         self.onSignOut = onSignOut
+        self.onShowSettings = onShowSettings
     }
 
     var body: some View {
         NavigationStack {
             List {
-                TargetReviewCard(viewModel: targetReviewViewModel)
-                ledgerCard
-                nextMealCard
-                NavigationLink("Add Food") {
-                    ManualFoodView(viewModel: manualFoodViewModel)
+                Section {
+                    if case .result(let ledger) = viewModel.ledgerPhase {
+                        NytrDailySummary(ledger: ledger)
+                    } else {
+                        ledgerCard
+                    }
+                }.listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                    .listRowBackground(Color.clear)
+                Section {
+                    nextMealCard
                 }
-                NavigationLink("Nutrition History") {
-                    NutritionHistoryView(
-                        viewModel: nutritionHistoryViewModel,
-                        subject: subject
-                    )
+                Section("Food log") {
+                    NavigationLink {
+                        ManualFoodView(viewModel: manualFoodViewModel)
+                    } label: {
+                        Label("Add Food", systemImage: "plus.circle.fill")
+                    }
+                    NavigationLink("Nutrition History") {
+                        NutritionHistoryView(viewModel: nutritionHistoryViewModel, subject: subject)
+                    }
                 }
-                NavigationLink("Progress") {
-                    OwnerProgressView(viewModel: progressViewModel, subject: subject)
+                Section("Your progress") {
+                    NavigationLink("Body & Goals") {
+                        BodyGoalsView(
+                            viewModel: bodyGoalsViewModel,
+                            targetReviewViewModel: targetReviewViewModel,
+                            subject: subject
+                        )
+                    }
+                    NavigationLink("Progress") {
+                        OwnerProgressView(
+                            viewModel: progressViewModel, bodyGoalsViewModel: bodyGoalsViewModel,
+                            targetReviewViewModel: targetReviewViewModel, subject: subject)
+                    }
+                    NavigationLink("Nytr Review") {
+                        AIReviewView(viewModel: aiReviewViewModel, subject: subject)
+                    }
                 }
-                NavigationLink("Nytr Review") {
-                    AIReviewView(viewModel: aiReviewViewModel, subject: subject)
+                Section {
+                    DisclosureGroup("Weight trend") { trendCard }
                 }
-                NavigationLink("Body & Goals") {
-                    BodyGoalsView(viewModel: bodyGoalsViewModel, subject: subject)
-                }
-                trendCard
-                planContent
             }
             #if os(iOS)
-            .listStyle(.insetGrouped)
+                .listStyle(.insetGrouped)
             #endif
             .refreshable { await viewModel.refresh() }
+            .nytrList()
             .navigationTitle("Today")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    NavigationLink("Settings") {
-                        SettingsView(
-                            healthSyncViewModel: healthSyncViewModel,
-                            onSignOut: onSignOut
-                        )
-                    }
+                    NytrSettingsToolbarButton(action: onShowSettings)
                 }
             }
         }
         .task(id: subject) {
             async let plan: Void = viewModel.activate(subject: subject)
-            async let review: Void = targetReviewViewModel.activate(subject: subject)
-            _ = await (plan, review)
+            async let bodyGoals: Void = bodyGoalsViewModel.activate(subject: subject)
+            _ = await (plan, bodyGoals)
         }
     }
 
     @ViewBuilder
     private var nextMealCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Next Meal").font(.headline)
+            Label("NEXT MEAL", systemImage: "fork.knife").font(.caption.weight(.bold)).tracking(1).foregroundStyle(
+                NytrDesign.accent)
             switch viewModel.nextMealPhase {
             case .loading:
                 ProgressView("Loading latest recommendation…").controlSize(.small)
             case .notGenerated:
-                Text("Generate from today’s recorded nutrition and remaining meal opportunities.")
+                Text("Find a meal that fits today’s food log and remaining meal times.")
                     .foregroundStyle(.secondary)
                 nextMealButton
             case .generating:
                 ProgressView("Checking remaining opportunities…").controlSize(.small)
             case .error(let message):
-                Text(message).foregroundStyle(.orange)
+                NytrStatusLabel(title: message, systemImage: "exclamationmark.triangle")
                 nextMealButton
             case .signedOut:
                 Text("Sign in to request a recommendation.").foregroundStyle(.secondary)
@@ -111,16 +132,15 @@ struct TodayView: View {
         }
         .font(.subheadline)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(Color.secondary.opacity(0.08))
+        .padding(.vertical, 6)
     }
 
     private var nextMealButton: some View {
         Button("Recommend next meal") {
             Task { await viewModel.generateNextMeal() }
         }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.small)
+        .buttonStyle(.bordered)
+        .controlSize(.large)
     }
 
     @ViewBuilder
@@ -136,51 +156,92 @@ struct TodayView: View {
                 Text(
                     "For \(opportunity.context.replacingOccurrences(of: "_", with: " "))"
                 )
-                    .foregroundStyle(.secondary)
+                .foregroundStyle(.secondary)
             }
-            LabeledContent(
+            NytrMetricRow(
                 "Remaining from records",
-                value: "\(ledger.remainingCalories ?? "unknown") kcal · "
-                    + "\(ledger.remainingProteinG ?? "unknown") g protein"
+                value: "\(NytrNumberFormat.whole(ledger.remainingCalories) ?? "unknown") kcal · "
+                    + "\(NytrNumberFormat.whole(ledger.remainingProteinG) ?? "unknown") g protein"
             )
-            LabeledContent(
+            NytrMetricRow(
                 "This opportunity",
-                value: "\(allocated.caloriesKcal) kcal · \(allocated.proteinG) g protein"
+                value: "\(NytrNumberFormat.whole(allocated.caloriesKcal) ?? allocated.caloriesKcal) kcal · "
+                    + "\(NytrNumberFormat.whole(allocated.proteinG) ?? allocated.proteinG) g protein"
             )
             let mealCalories = candidate.totals.quantities["calories_kcal"]
             let mealProtein = candidate.totals.quantities["protein_g"]
             if let mealCalories, let mealProtein {
-                LabeledContent(
+                NytrMetricRow(
                     "Recommended meal",
-                    value: "\(mealCalories) kcal · \(mealProtein) g protein"
+                    value: "\(NytrNumberFormat.whole(mealCalories) ?? mealCalories) kcal · "
+                        + "\(NytrNumberFormat.whole(mealProtein) ?? mealProtein) g protein"
                 )
             } else if let mealCalories {
-                LabeledContent("Recommended meal", value: "\(mealCalories) kcal")
+                NytrMetricRow(
+                    "Recommended meal",
+                    value: "\(NytrNumberFormat.whole(mealCalories) ?? mealCalories) kcal"
+                )
             } else if let mealProtein {
-                LabeledContent("Recommended meal", value: "\(mealProtein) g protein")
+                NytrMetricRow(
+                    "Recommended meal",
+                    value: "\(NytrNumberFormat.whole(mealProtein) ?? mealProtein) g protein"
+                )
             }
             if candidate.configurableEstimate != nil {
                 Text("Estimated nutrition — review portions and caveats.")
                     .foregroundStyle(.orange)
             } else {
-                Text("Nutrition pinned to accepted Stacks menu evidence.")
+                Text("Based on the accepted Stacks menu.")
                     .foregroundStyle(.secondary)
             }
-            Text("Nutrition confidence: \(candidate.totals.confidence)")
+            Text("Nutrition: \(candidate.totals.confidence.replacingOccurrences(of: "_", with: " "))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if !allocated.proteinScoringActive {
-                Text("Protein goal already satisfied; ranking did not chase more protein.")
+                Text("Your protein goal is met. This recommendation prioritizes your remaining needs.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Text("A recommendation is not consumption and does not change recorded totals.")
+            Text("Only meals you record as eaten count toward your totals.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if artifact.ledger?.unknownNutrients?.contains(where: {
+                !["calories_kcal", "protein_g", "carbohydrate_g", "total_fat_g"]
+                    .contains($0)
+            }) == true {
+                Text("Some micronutrient evidence is unavailable.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             if let alternatives = artifact.alternatives, !alternatives.isEmpty {
                 DisclosureGroup("Alternatives") {
                     ForEach(alternatives, id: \.candidateId) { alternative in
                         Text(nextMealName(alternative))
+                    }
+                }
+            }
+            if let quality = response.nutritionQuality {
+                ForEach(quality.findings.filter { $0.band == "high" && $0.nutrient != "fiber_g" }) { finding in
+                    Label(
+                        "\(finding.label): "
+                            + "\(NytrNumberFormat.detail(finding.dailyValuePercent) ?? finding.dailyValuePercent)% of the daily reference",
+                        systemImage: "info.circle"
+                    )
+                    .font(.subheadline).foregroundStyle(.secondary)
+                }
+                DisclosureGroup("Beyond calories & protein") {
+                    ForEach(quality.findings) { finding in
+                        NytrMetricRow(
+                            finding.label,
+                            value:
+                                "\(NytrNumberFormat.detail(finding.amount) ?? finding.amount) \(finding.unit) · "
+                                + "\(NytrNumberFormat.detail(finding.dailyValuePercent) ?? finding.dailyValuePercent)% DV · \(finding.band)"
+                        )
+                    }
+                    Text(quality.notice).font(.caption).foregroundStyle(.secondary)
+                    if !quality.missingNutrients.isEmpty {
+                        Text("Some nutrient evidence is missing; this is not a complete quality assessment.").font(
+                            .caption)
                     }
                 }
             }
@@ -191,10 +252,16 @@ struct TodayView: View {
                 .foregroundStyle(.secondary)
         }
         Text(
-            "Generated \(response.decisionAt.formatted()) · \(artifact.nextMealPolicyVersion)"
+            "Generated \(response.decisionAt.formatted())"
         )
-            .font(.caption2)
-            .foregroundStyle(.secondary)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        DisclosureGroup("Recommendation details") {
+            NytrMetricRow("Calculation version", value: artifact.nextMealPolicyVersion)
+            ForEach(response.reasonCodes, id: \.self) { reason in
+                Text(reason).font(.caption)
+            }
+        }
     }
 
     @ViewBuilder
@@ -211,7 +278,7 @@ struct TodayView: View {
                 .foregroundStyle(.secondary)
         } else {
             Toggle(
-                "I confirm I ate this recommendation",
+                "I ate this meal",
                 isOn: Binding(
                     get: { viewModel.nextMealConsumptionConfirmed },
                     set: { viewModel.setNextMealConsumptionConfirmed($0) }
@@ -219,13 +286,13 @@ struct TodayView: View {
             )
             .toggleStyle(.switch)
             if viewModel.isRecordingNextMealConsumption {
-                ProgressView("Recording factual consumption…").controlSize(.small)
+                ProgressView("Recording meal…").controlSize(.small)
             } else {
                 Button("Record as eaten") {
                     Task { await viewModel.recordNextMealConsumption() }
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                .buttonStyle(.borderedProminent).tint(NytrDesign.buttonFill)
+                .controlSize(.large)
                 .disabled(!viewModel.canRecordNextMealConsumption)
             }
         }
@@ -268,9 +335,9 @@ struct TodayView: View {
             case .loading:
                 ProgressView("Loading recorded totals…").controlSize(.small)
             case .error(let message):
-                Text(message).foregroundStyle(.orange)
-                Button("Try Again") { Task { await viewModel.refresh() } }
-                    .controlSize(.small)
+                NytrStatusLabel(title: message, systemImage: "exclamationmark.triangle")
+                Button("Try Again") { Task { await viewModel.retryLedger() } }
+                    .controlSize(.large)
             case .signedOut:
                 Text("Sign in to view recorded totals.").foregroundStyle(.secondary)
             case .result(let ledger):
@@ -292,7 +359,7 @@ struct TodayView: View {
                     "Based on \(ledger.consumedItemCount) recorded item"
                         + (ledger.consumedItemCount == 1 ? "." : "s.")
                 )
-                    .foregroundStyle(.secondary)
+                .foregroundStyle(.secondary)
                 if ledger.nutritionCompleteness != .complete {
                     Text(
                         ledger.nutritionCompleteness == .partial
@@ -306,15 +373,14 @@ struct TodayView: View {
                     Text("Totals include estimated nutrition.")
                         .foregroundStyle(.orange)
                 }
-                Text("Recorded nutrition reflects logged consumption only; unlogged intake cannot be inferred.")
+                Text("Only logged food is included.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .font(.subheadline)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(Color.secondary.opacity(0.08))
+        .padding(.vertical, 6)
     }
 
     @ViewBuilder
@@ -326,20 +392,25 @@ struct TodayView: View {
         unit: String
     ) -> some View {
         if let consumed {
+            let displayedConsumed = NytrNumberFormat.whole(consumed) ?? consumed
             if let target {
-                LabeledContent(label, value: "\(consumed) / \(target) \(unit)")
+                NytrMetricRow(
+                    label,
+                    value: "\(displayedConsumed) / \(NytrNumberFormat.whole(target) ?? target) \(unit)"
+                ).font(.title3.weight(.semibold))
             } else {
-                LabeledContent(label, value: "\(consumed) \(unit)")
+                NytrMetricRow(label, value: "\(displayedConsumed) \(unit)").font(.title3.weight(.semibold))
             }
         } else {
-            LabeledContent(label, value: "Unavailable")
+            NytrMetricRow(label, value: "Unavailable")
         }
         if let remaining {
             if remaining.hasPrefix("-") {
-                Text("\(String(remaining.dropFirst())) \(unit) over target")
+                let magnitude = String(remaining.dropFirst())
+                Text("\(NytrNumberFormat.whole(magnitude) ?? magnitude) \(unit) over target")
                     .foregroundStyle(.secondary)
             } else {
-                Text("\(remaining) \(unit) remaining against recorded nutrition")
+                Text("\(NytrNumberFormat.whole(remaining) ?? remaining) \(unit) remaining from logged food")
                     .foregroundStyle(.secondary)
             }
         }
@@ -377,16 +448,15 @@ struct TodayView: View {
             ProgressView("Generating today’s plan…")
         case .noApprovedPolicy:
             messageView(
-                title: "Target policy required",
-                detail: "Approve a target policy before generating a plan.",
+                title: "Approved targets needed",
+                detail: "Approve your targets in Body & Goals before creating a plan.",
                 action: "Refresh",
                 handler: { Task { await viewModel.refresh() } }
             )
         case .menuDataUnavailable:
             messageView(
                 title: "Today’s menu isn’t available",
-                detail: "Nytr has no validated Stacks menu data for today, "
-                    + "so it will not fabricate a plan.",
+                detail: "Today’s Stacks menu has not been verified yet. Refresh to check again.",
                 action: "Refresh",
                 handler: { Task { await viewModel.refresh() } }
             )
@@ -417,9 +487,9 @@ struct TodayView: View {
             case .loading:
                 ProgressView("Loading trend…").controlSize(.small)
             case .error(let message):
-                Text(message).foregroundStyle(.orange)
+                NytrStatusLabel(title: message, systemImage: "exclamationmark.triangle")
                 Button("Try Again") { Task { await viewModel.refresh() } }
-                    .controlSize(.small)
+                    .controlSize(.large)
             case .signedOut:
                 Text("Sign in to view your trend.").foregroundStyle(.secondary)
             case .result(let trend):
@@ -428,8 +498,7 @@ struct TodayView: View {
         }
         .font(.subheadline)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(Color.secondary.opacity(0.08))
+        .padding(.vertical, 6)
     }
 
     @ViewBuilder
@@ -474,9 +543,9 @@ struct TodayView: View {
         action: String,
         handler: @escaping () -> Void
     ) -> some View {
-        VStack(spacing: 16) {
-            Text(title).font(.title2)
-            Text(detail).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        VStack(alignment: .leading, spacing: 12) {
+            NytrStatusLabel(title: title, systemImage: "info.circle")
+            Text(detail).foregroundStyle(.secondary)
             Button(action, action: handler)
         }
         .padding()
@@ -488,12 +557,14 @@ struct TodayView: View {
             Section { Text(banner).foregroundStyle(.orange) }
         }
         Section("Plan") {
-            LabeledContent("Date", value: plan.planDate)
+            NytrMetricRow("Date", value: plan.planDate)
             if let policy = plan.targetPolicy {
-                LabeledContent("Target policy", value: policy.policyVersion)
+                DisclosureGroup("Calculation details") {
+                    NytrMetricRow("Target version", value: policy.policyVersion)
+                }
             }
             if let generatedAt = plan.generatedAt {
-                LabeledContent("Generated", value: generatedAt.formatted())
+                NytrMetricRow("Generated", value: generatedAt.formatted())
             }
         }
         if viewModel.showsRegenerateAction {
@@ -512,12 +583,12 @@ struct TodayView: View {
                 }
                 .disabled(!viewModel.canRegenerate)
                 if let message = viewModel.regenerationMessage {
-                    Text(message).foregroundStyle(.orange)
+                    NytrStatusLabel(title: message, systemImage: "exclamationmark.triangle")
                 }
             }
         }
         if let message = viewModel.consumptionMessage {
-            Section { Text(message).foregroundStyle(.orange) }
+            Section { NytrStatusLabel(title: message, systemImage: "exclamationmark.triangle") }
         }
         ForEach(Array(plan.plan.slots.enumerated()), id: \.offset) { slotIndex, slot in
             Section("\(friendlyContext(slot.context)) · \(slot.menuPeriod)") {
@@ -567,10 +638,10 @@ struct TodayView: View {
                 Text(estimated.definition.configurationSummary)
                     .font(.subheadline)
                 if let calories = candidate.totals.quantities["calories_kcal"] {
-                    LabeledContent("Estimated calories", value: calories)
+                    NytrMetricRow("Estimated calories", value: calories)
                 }
                 if let protein = candidate.totals.quantities["protein_g"] {
-                    LabeledContent("Estimated protein (g)", value: protein)
+                    NytrMetricRow("Estimated protein (g)", value: protein)
                 }
                 if !estimated.definition.estimate.unknownNutrients.isEmpty {
                     Text(
@@ -591,7 +662,8 @@ struct TodayView: View {
                         ) { _, component in
                             if let portion = component.portion {
                                 Text(
-                                    "\(component.componentId): \(portion.amount) \(portion.unit)"
+                                    "\(component.componentId): "
+                                        + "\(NytrNumberFormat.detail(portion.amount) ?? portion.amount) \(portion.unit)"
                                 )
                             } else {
                                 Text("\(component.componentId): quantity unknown")
@@ -608,7 +680,7 @@ struct TodayView: View {
                 ForEach(candidate.totals.quantities.keys.sorted(), id: \.self) { nutrient in
                     if let value = candidate.totals.quantities[nutrient] {
                         let display = nutrientDisplay(nutrient, value: value)
-                        LabeledContent(display.label, value: display.value)
+                        NytrMetricRow(display.label, value: display.value)
                     }
                 }
             }
@@ -674,19 +746,20 @@ struct TodayView: View {
     }
 
     private func nutrientDisplay(_ key: String, value: String) -> (label: String, value: String) {
+        let amount = NytrNumberFormat.detail(value) ?? value
         switch key {
-        case "calories_kcal": return ("Calories", "\(value) kcal")
-        case "protein_g": return ("Protein", "\(value) g")
-        case "carbohydrate_g": return ("Carbohydrate", "\(value) g")
-        case "total_fat_g": return ("Total fat", "\(value) g")
-        case "saturated_fat_g": return ("Saturated fat", "\(value) g")
-        case "trans_fat_g": return ("Trans fat", "\(value) g")
-        case "fiber_g": return ("Fiber", "\(value) g")
-        case "sugars_g": return ("Sugars", "\(value) g")
-        case "added_sugars_g": return ("Added sugars", "\(value) g")
-        case "sodium_mg": return ("Sodium", "\(value) mg")
-        case "cholesterol_mg": return ("Cholesterol", "\(value) mg")
-        default: return (key.replacingOccurrences(of: "_", with: " ").capitalized, value)
+        case "calories_kcal": return ("Calories", "\(NytrNumberFormat.whole(value) ?? value) kcal")
+        case "protein_g": return ("Protein", "\(amount) g")
+        case "carbohydrate_g": return ("Carbohydrate", "\(amount) g")
+        case "total_fat_g": return ("Total fat", "\(amount) g")
+        case "saturated_fat_g": return ("Saturated fat", "\(amount) g")
+        case "trans_fat_g": return ("Trans fat", "\(amount) g")
+        case "fiber_g": return ("Fiber", "\(amount) g")
+        case "sugars_g": return ("Sugars", "\(amount) g")
+        case "added_sugars_g": return ("Added sugars", "\(amount) g")
+        case "sodium_mg": return ("Sodium", "\(NytrNumberFormat.whole(value) ?? value) mg")
+        case "cholesterol_mg": return ("Cholesterol", "\(NytrNumberFormat.whole(value) ?? value) mg")
+        default: return (key.replacingOccurrences(of: "_", with: " ").capitalized, amount)
         }
     }
 }

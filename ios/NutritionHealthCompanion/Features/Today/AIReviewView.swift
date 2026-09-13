@@ -12,80 +12,97 @@ struct AIReviewView: View {
     var body: some View {
         List {
             Section {
-                Text("Generate a concise AI explanation of Nytr’s current deterministic state.")
-                    .foregroundStyle(.secondary)
-                Text("The explanation cannot change targets, recommendations, or recorded consumption.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                NytrScreenHeader(
+                    eyebrow: "INSIGHT", title: "Understand your day",
+                    subtitle: "Nytr analysis first. An optional, private second opinion.", symbol: "sparkles")
+            }.listRowBackground(Color.clear)
+            if let evidence = viewModel.evidence {
+                facts(evidence.snapshot)
+                if !evidence.modelInput.qualityFlags.isEmpty {
+                    Section("Selected meal · nutrient signals") {
+                        ForEach(evidence.modelInput.qualityFlags, id: \.self) { flag in
+                            Text(
+                                flag.replacingOccurrences(of: "selected_", with: "").replacingOccurrences(
+                                    of: "_", with: " "))
+                        }
+                        Text("FDA daily-reference contributions for the selected quantity. Not personal limits.").font(
+                            .caption
+                        ).foregroundStyle(.secondary)
+                    }
+                }
             }
-
-            switch viewModel.phase {
-            case .idle:
-                Section { generateButton }
-            case .loading:
+            if case .error(let message) = viewModel.phase {
                 Section {
-                    ProgressView("Generating Nytr Review…")
-                        .accessibilityLabel("Generating Nytr Review")
+                    NytrStateView(title: "Evidence unavailable", message: message, symbol: "wifi.exclamationmark")
                 }
-            case .result(let response):
-                facts(response.snapshot)
-                aiExplanation(response)
-                Section { generateButton }
-            case .unavailable(let response):
-                facts(response.snapshot)
-                Section("AI unavailable") {
-                    Label(
-                        unavailableMessage(response.failureCode),
-                        systemImage: "exclamationmark.triangle.fill"
-                    )
-                    .foregroundStyle(.orange)
-                    Button("Try Again") { Task { await viewModel.generate() } }
-                }
-            case .error(let message):
-                Section("AI unavailable") {
-                    Label(message, systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                    Button("Try Again") { Task { await viewModel.generate() } }
-                }
-            case .signedOut:
-                Section { Text("Sign in to generate a review.").foregroundStyle(.secondary) }
             }
+            Section {
+                if viewModel.isRequesting {
+                    ProgressView("Preparing review…")
+                    if viewModel.isGenerating {
+                        Button("Cancel AI Review") { viewModel.cancelLocalReview() }
+                    }
+                } else {
+                    generateButton
+                }
+            }
+            Section("AI second opinion · on device") {
+                if viewModel.modelAvailable {
+                    Label("Private to this device", systemImage: "lock.shield")
+                    Text(
+                        "Apple’s on-device model explains only Nytr’s minimized evidence. No AI provider request or API cost."
+                    )
+                    .font(.subheadline).foregroundStyle(.secondary)
+                    Button("Explain with Apple Intelligence") { Task { await viewModel.explainOnDevice() } }
+                        .buttonStyle(.borderedProminent).tint(NytrDesign.buttonFill).controlSize(.large)
+                        .disabled(viewModel.evidence == nil || viewModel.isRequesting)
+                } else {
+                    NytrStateView(
+                        title: "AI Review requires Apple Intelligence",
+                        message: viewModel.modelUnavailableMessage,
+                        symbol: "apple.intelligence")
+                }
+                if let message = viewModel.localMessage { Text(message).foregroundStyle(.secondary) }
+            }
+            if case .result(let response) = viewModel.phase { aiExplanation(response) }
         }
+        .nytrList()
         .navigationTitle("Nytr Review")
         .task(id: subject) { viewModel.activate(subject: subject) }
     }
 
     private var generateButton: some View {
-        Button("Generate Review") { Task { await viewModel.generate() } }
-            .buttonStyle(.borderedProminent)
+        Button("Review current evidence") { Task { await viewModel.generate() } }
+            .buttonStyle(.borderedProminent).tint(NytrDesign.buttonFill)
+            .controlSize(.large)
             .disabled(viewModel.isRequesting)
     }
 
     @ViewBuilder
     private func facts(_ snapshot: AIReviewSnapshotDTO) -> some View {
-        Section("Nytr facts") {
-            LabeledContent(
+        Section("Nytr analysis · deterministic") {
+            NytrMetricRow(
                 "Goal",
                 value: snapshot.goal.mode?.capitalized ?? "Unavailable"
             )
-            LabeledContent("Goal band", value: label(snapshot.goal.bandStatus))
-            LabeledContent(
+            NytrMetricRow("Goal band", value: label(snapshot.goal.bandStatus))
+            NytrMetricRow(
                 "Active targets",
                 value: targetText(snapshot.targets)
             )
-            LabeledContent(
+            NytrMetricRow(
                 "Recorded nutrition today",
                 value: recordedText(snapshot.todayRecorded)
             )
-            LabeledContent("Weight evidence", value: label(snapshot.bodyTrend.status))
+            NytrMetricRow("Weight evidence", value: label(snapshot.bodyTrend.status))
             if let age = snapshot.bodyTrend.latestMeasurementAgeDays {
-                LabeledContent("Latest weight age", value: "\(age) days")
+                NytrMetricRow("Latest weight age", value: "\(age) days")
             }
-            LabeledContent(
+            NytrMetricRow(
                 "Recorded days",
                 value: "\(snapshot.recordedNutritionProgress.daysWithRecords7d) of 7 recent"
             )
-            LabeledContent("Next Meal", value: label(snapshot.nextMeal.status))
+            NytrMetricRow("Next Meal", value: label(snapshot.nextMeal.status))
         }
     }
 
@@ -96,19 +113,19 @@ struct AIReviewView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Label("AI explanation", systemImage: "sparkles")
                         .font(.headline)
-                        .foregroundStyle(.purple)
+                        .foregroundStyle(Color.accentColor)
                     Text(response.authorityNotice)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Text(review.summary)
-                    textGroup("Attention", review.attentionItems)
-                    textGroup("Evidence", review.evidenceNotes)
+                    textGroup("Key findings", review.attentionItems)
+                    textGroup("Considerations", review.evidenceNotes)
                     textGroup("Limitations", review.limitations)
                 }
                 .padding(.vertical, 4)
                 .accessibilityElement(children: .contain)
             }
-            .listRowBackground(Color.purple.opacity(0.08))
+            .listRowBackground(Color.accentColor.opacity(0.06))
         }
     }
 
@@ -123,34 +140,83 @@ struct AIReviewView: View {
     }
 
     private func targetText(_ targets: AIReviewTargetsDTO) -> String {
-        let calories = targets.caloriesKcal.map { "\($0) kcal target" }
+        let calories =
+            targets.caloriesKcal.map { "\(NytrNumberFormat.whole($0) ?? $0) kcal target" }
             ?? "calorie target unavailable"
         let proteinLabel = targets.proteinKind == "floor" ? "protein floor" : "protein target"
-        let protein = targets.proteinG.map { "\($0) g \(proteinLabel)" }
+        let protein =
+            targets.proteinG.map { "\(NytrNumberFormat.whole($0) ?? $0) g \(proteinLabel)" }
             ?? "\(proteinLabel) unavailable"
         return "\(calories) · \(protein)"
     }
 
     private func recordedText(_ recorded: AIReviewTodayRecordedDTO) -> String {
-        let calories = recorded.caloriesKcal.map { "\($0) kcal" } ?? "calories unavailable"
-        let protein = recorded.proteinG.map { "\($0) g protein" } ?? "protein unavailable"
+        let calories = recorded.caloriesKcal.map {
+            "\(NytrNumberFormat.whole($0) ?? $0) kcal"
+        } ?? "calories unavailable"
+        let protein = recorded.proteinG.map {
+            "\(NytrNumberFormat.whole($0) ?? $0) g protein"
+        } ?? "protein unavailable"
         return "\(calories) · \(protein) · \(label(recorded.completeness))"
-    }
-
-    private func unavailableMessage(_ code: String?) -> String {
-        switch code {
-        case "ai_not_configured": return "AI review is not configured. Nytr's other features remain available."
-        case "ai_rate_limited": return "The provider is rate limited. Retry explicitly later."
-        case "ai_timeout": return "The provider did not respond in time."
-        case "ai_provider_refused": return "The provider could not produce this review."
-        case "ai_provider_invalid": return "The provider returned an invalid review."
-        case "ai_authentication_failed": return "The AI provider could not authenticate. Nytr's other features remain available."
-        case "ai_invalid_request": return "The AI review request was rejected. Nytr's other features remain available."
-        default: return "The provider is temporarily unavailable."
-        }
     }
 
     private func label(_ value: String) -> String {
         value.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+}
+
+struct AIReviewFailurePresentation: Equatable {
+    let title: String
+    let message: String
+    let allowsRetry: Bool
+    var isPrivacyChoice: Bool = false
+
+    static func forCode(_ code: String?) -> Self {
+        switch code {
+        case "ai_disabled_for_privacy":
+            return Self(
+                title: "AI Review is disabled for privacy",
+                message:
+                    "Your personal health and nutrition evidence stays out of AI providers. Nytr’s deterministic analysis remains available.",
+                allowsRetry: false,
+                isPrivacyChoice: true
+            )
+        case "ai_not_configured":
+            return Self(
+                title: "AI review not configured",
+                message: "AI review is not configured. Nytr's other features remain available.",
+                allowsRetry: false
+            )
+        case "ai_rate_limited":
+            return Self(
+                title: "AI review rate limited",
+                message: "The provider is rate limited. Retry explicitly later.",
+                allowsRetry: true
+            )
+        case "ai_timeout":
+            return Self(
+                title: "AI provider temporarily unavailable",
+                message: "The provider did not respond in time.",
+                allowsRetry: true
+            )
+        case "ai_provider_refused":
+            return Self(
+                title: "AI review unavailable",
+                message: "The provider could not produce this review.",
+                allowsRetry: true
+            )
+        case "ai_provider_invalid":
+            return Self(
+                title: "AI response could not be validated",
+                message: "The provider returned an invalid review.",
+                allowsRetry: true
+            )
+        default:
+            return Self(
+                title: "AI provider temporarily unavailable",
+                message: "The provider is temporarily unavailable.",
+                allowsRetry: true
+            )
+        }
     }
 }

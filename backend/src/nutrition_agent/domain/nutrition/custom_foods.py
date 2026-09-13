@@ -14,6 +14,9 @@ class CustomFoodAuthority(StrEnum):
     OPEN_FOOD_FACTS = "open_food_facts"
 
 
+SERVING_AUTHORITY_OWNER_ENTERED = "owner_entered"
+
+
 @dataclass(frozen=True)
 class CustomFoodProvenance:
     authority: CustomFoodAuthority
@@ -25,8 +28,15 @@ class CustomFoodProvenance:
     payload_sha256: str | None = None
     data_license: str | None = None
     nutrition_basis: str | None = None
+    # Records who established the physical serving basis when it did NOT come
+    # from the provider. Only "owner_entered" is representable, so a serving the
+    # owner supplied from the package label can never be mistaken for provider
+    # evidence. The nutrition values themselves always keep `authority`.
+    serving_authority: str | None = None
 
     def __post_init__(self) -> None:
+        if self.serving_authority not in (None, SERVING_AUTHORITY_OWNER_ENTERED):
+            raise ValueError("serving authority may only record an owner-entered serving")
         if self.authority is CustomFoodAuthority.OWNER_ENTERED:
             if any(
                 value is not None
@@ -39,6 +49,9 @@ class CustomFoodProvenance:
                     self.payload_sha256,
                     self.data_license,
                     self.nutrition_basis,
+                    # An owner-entered food's serving is already owner evidence,
+                    # so the marker would be redundant and is not representable.
+                    self.serving_authority,
                 )
             ):
                 raise ValueError("owner-entered provenance cannot claim provider evidence")
@@ -225,10 +238,67 @@ class ManualFoodConsumptionEntry:
             self.provenance_summary,
         )
 
+    def correction_facts(self) -> tuple[object, ...]:
+        """Replacement facts, excluding generated identity and persistence time."""
+        return (
+            self.user_id,
+            self.food_id,
+            self.food_version_id,
+            self.meal_period,
+            self.consumed_amount,
+            self.consumed_unit,
+            self.portion_factor,
+            self.food_name,
+            self.brand,
+            self.serving_description,
+            self.serving_amount,
+            self.serving_unit,
+            self.nutrition,
+            self.source_system,
+            self.nutrition_authority,
+            self.nutrition_confidence,
+            self.provenance_summary,
+        )
+
 
 @dataclass(frozen=True)
 class RecordManualFoodOutcome:
     entry: ManualFoodConsumptionEntry
+    created: bool
+
+
+class ManualFoodAdjustmentKind(StrEnum):
+    CORRECTION = "correction"
+    VOID = "void"
+
+
+@dataclass(frozen=True)
+class ManualFoodConsumptionAdjustment:
+    """Append-only replacement/void edge for one previously active event."""
+
+    adjustment_id: UUID
+    user_id: UUID
+    client_event_id: UUID
+    superseded_entry_id: UUID
+    replacement_entry_id: UUID | None
+    kind: ManualFoodAdjustmentKind
+    recorded_at: datetime
+
+    def __post_init__(self) -> None:
+        if self.kind is ManualFoodAdjustmentKind.CORRECTION:
+            if self.replacement_entry_id is None:
+                raise ValueError("a correction requires a replacement entry")
+            if self.replacement_entry_id == self.superseded_entry_id:
+                raise ValueError("a correction must append a new entry")
+        elif self.replacement_entry_id is not None:
+            raise ValueError("a void cannot contain a replacement entry")
+        _require_aware(self.recorded_at, "recorded_at")
+
+
+@dataclass(frozen=True)
+class AdjustManualFoodOutcome:
+    adjustment: ManualFoodConsumptionAdjustment
+    replacement: ManualFoodConsumptionEntry | None
     created: bool
 
 
@@ -238,12 +308,16 @@ def _require_aware(value: datetime, name: str) -> None:
 
 
 __all__ = [
+    "SERVING_AUTHORITY_OWNER_ENTERED",
     "CustomFoodAuthority",
     "CustomFoodProvenance",
     "CustomFoodVersion",
     "ManualFoodConsumptionEntry",
+    "ManualFoodConsumptionAdjustment",
+    "ManualFoodAdjustmentKind",
     "ManualMealPeriod",
     "ManualNutritionFacts",
+    "AdjustManualFoodOutcome",
     "RecordManualFoodOutcome",
     "OWNER_ENTERED_PROVENANCE",
 ]

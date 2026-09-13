@@ -20,8 +20,8 @@ final class AdapterMappingTests: XCTestCase {
     }
 
     func test_knownConversion_150lb() {
-        // Synthetic fixture conversion; no owner measurement is embedded.
-        XCTAssertEqual(q(158.732 * 0.45359237), "72.000")
+        // 150 lb * 0.45359237 = 68.0388855 -> 68.039
+        XCTAssertEqual(q(150 * 0.45359237), "68.039")
     }
 
     func test_noDoubleRounding_singleApplicationIsIdempotent() {
@@ -37,7 +37,7 @@ final class AdapterMappingTests: XCTestCase {
     func test_localePinning_alwaysDotSeparator() {
         // en_US_POSIX rendering must never emit ',' separators regardless of
         // the device locale the formatter would otherwise inherit.
-        let s = q(72.000)
+        let s = q(68.039)
         XCTAssertFalse(s.contains(","))
         XCTAssertTrue(s.hasSuffix(".039"))
     }
@@ -49,7 +49,7 @@ final class AdapterMappingTests: XCTestCase {
 
     func test_typicalWeights_threeDecimalPlaces() {
         XCTAssertEqual(q(70), "70.000")
-        XCTAssertEqual(q(160.0 * 0.45359237), "72.575")  // synthetic regression value
+        XCTAssertEqual(q(149.7 * 0.45359237), "67.903")  // PROJECT_CONTEXT Aug 9-15 avg in kg
     }
 
     func test_workoutDurationAndEnergyMappingUsesExactThreePlaceDecimalStrings() {

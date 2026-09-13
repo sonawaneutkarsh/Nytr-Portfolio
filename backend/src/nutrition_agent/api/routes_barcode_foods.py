@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from decimal import Decimal, InvalidOperation
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Header, Request, Response
 from fastapi.responses import JSONResponse
@@ -20,14 +21,36 @@ from nutrition_agent.domain.nutrition.barcodes import (
     BarcodeProductIncomplete,
     BarcodeProductNotFound,
     BarcodeProviderUnavailable,
+    BarcodeServingEvidenceRefused,
+    OwnerServingEvidence,
 )
 
 router = APIRouter(prefix="/v1/nutrition/barcodes", tags=["barcode-foods"])
 
 
+class OwnerServingRequest(BaseModel):
+    """A physical serving the owner read off the package label."""
+
+    model_config = ConfigDict(extra="forbid")
+    amount: str
+    unit: Literal["g", "ml"]
+    label: Literal["serving", "bottle", "carton"] | None = None
+
+
 class ImportBarcodeFoodRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_payload_sha256: str
+    owner_serving: OwnerServingRequest | None = None
+
+
+def _owner_serving(payload: OwnerServingRequest | None) -> OwnerServingEvidence | None:
+    if payload is None:
+        return None
+    try:
+        amount = Decimal(payload.amount)
+    except InvalidOperation as exc:
+        raise ValueError("owner serving amount must be a decimal string") from exc
+    return OwnerServingEvidence(amount=amount, unit=payload.unit, label=payload.label)
 
 
 def _uses(request: Request) -> tuple[LookupBarcodeFoodUseCase, ImportBarcodeFoodUseCase]:
@@ -46,6 +69,10 @@ def _product_content(value: BarcodeProduct) -> dict[str, object]:
         "serving_description": value.serving_description,
         "serving_amount": value.serving_amount,
         "serving_unit": value.serving_unit,
+        # Privacy-safe classification only: no source values, product identity,
+        # or payload detail. Clients use it for diagnostics and to decide whether
+        # an owner-entered serving can be offered.
+        "basis_reason": value.basis_reason,
         "nutrition": {
             name: str(amount) if amount is not None else None
             for name, amount in value.nutrition.values().items()
@@ -61,6 +88,8 @@ def _product_content(value: BarcodeProduct) -> dict[str, object]:
 def _lookup_error(exc: Exception) -> JSONResponse:
     if isinstance(exc, BarcodeProductChanged):
         return _error(409, "barcode_product_changed", str(exc))
+    if isinstance(exc, BarcodeServingEvidenceRefused):
+        return _error(422, "owner_serving_unsupported", str(exc))
     if isinstance(exc, ValueError) and not isinstance(exc, BarcodeProductIncomplete):
         return _error(400, "invalid_barcode", str(exc))
     if isinstance(exc, BarcodeProductNotFound):
@@ -103,6 +132,7 @@ def import_barcode_food(
             user_id=subject,
             barcode=barcode,
             expected_payload_sha256=payload.expected_payload_sha256,
+            owner_serving=_owner_serving(payload.owner_serving),
         )
     except (
         ValueError,

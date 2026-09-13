@@ -53,8 +53,12 @@ final class TodayViewModel {
     private let eventId: () -> UUID
     private let onUnauthorized: @MainActor () -> Void
     private let onNextMealConsumptionRecorded: @MainActor () async -> Void
+    private let onNutritionRecorded: @MainActor () async -> Void
+    private let onPlanStateChanged:
+        @MainActor (CompletedDayPlan?, [UUID: [ConsumptionEntryResponse]], String) async -> Void
 
     private var subject: String?
+    private var ledgerRequestToken: UUID?
     private var pendingEvents: [ConsumptionActionKey: UUID] = [:]
     private var pendingNextMealRequestId: UUID?
     private var pendingNextMealConsumptionEventId: UUID?
@@ -68,6 +72,7 @@ final class TodayViewModel {
     private(set) var isRecordingNextMealConsumption = false
     private(set) var nextMealConsumptionMessage: String?
     private(set) var consumptionByItem: [UUID: [ConsumptionEntryResponse]] = [:]
+    private(set) var isPlanConsumptionStatusResolved = false
     private(set) var consumptionMessage: String?
     private(set) var isLoading = false
     private(set) var isRegenerating = false
@@ -80,7 +85,11 @@ final class TodayViewModel {
         timezoneIdentifier: @escaping () -> String = { TimeZone.current.identifier },
         eventId: @escaping () -> UUID = UUID.init,
         onUnauthorized: @escaping @MainActor () -> Void = {},
-        onNextMealConsumptionRecorded: @escaping @MainActor () async -> Void = {}
+        onNextMealConsumptionRecorded: @escaping @MainActor () async -> Void = {},
+        onNutritionRecorded: @escaping @MainActor () async -> Void = {},
+        onPlanStateChanged: @escaping @MainActor (
+            CompletedDayPlan?, [UUID: [ConsumptionEntryResponse]], String
+        ) async -> Void = { _, _, _ in }
     ) {
         self.backend = backend
         self.cache = cache
@@ -89,6 +98,8 @@ final class TodayViewModel {
         self.eventId = eventId
         self.onUnauthorized = onUnauthorized
         self.onNextMealConsumptionRecorded = onNextMealConsumptionRecorded
+        self.onNutritionRecorded = onNutritionRecorded
+        self.onPlanStateChanged = onPlanStateChanged
     }
 
     var canMutate: Bool {
@@ -123,9 +134,12 @@ final class TodayViewModel {
     }
 
     func activate(subject: String) async {
+        guard self.subject != subject else { return }
         if self.subject != subject {
             self.subject = subject
+            ledgerRequestToken = nil
             consumptionByItem = [:]
+            isPlanConsumptionStatusResolved = false
             consumptionMessage = nil
             regenerationMessage = nil
             pendingEvents = [:]
@@ -141,6 +155,24 @@ final class TodayViewModel {
     func refresh() async {
         guard subject != nil else { return }
         await load()
+    }
+
+    /// Refresh only nutrition-derived Today state after a food-log mutation.
+    /// Plan, body trend, Training, Progress, and Body & Goals remain untouched.
+    func refreshNutrition() async {
+        guard let subject else { return }
+        let date = requestDate()
+        async let ledger: Void = fetchLedger(for: date)
+        async let nextMeal: Void = fetchLatestNextMeal(
+            expectedSubject: subject, for: date
+        )
+        _ = await (ledger, nextMeal)
+    }
+
+    func retryLedger() async {
+        guard subject != nil else { return }
+        ledgerPhase = .loading
+        await fetchLedger(for: requestDate())
     }
 
     func generateNextMeal() async {
@@ -207,6 +239,7 @@ final class TodayViewModel {
             isNextMealConsumptionStatusResolved = true
             nextMealConsumptionMessage = "Recorded as eaten."
             await fetchLedger(for: requestDate())
+            await onNutritionRecorded()
             await onNextMealConsumptionRecorded()
             return true
         } catch BackendError.rejected(_, let code, _)
@@ -319,11 +352,13 @@ final class TodayViewModel {
 
     func recordConsumption(item: PlanItemReference, state: ConsumptionState) async {
         guard canMutate, let plan = displayedPlan else { return }
-        guard plan.itemReference(
-            slotIndex: item.slotIndex,
-            rank: item.rank,
-            candidateId: item.candidateId
-        )?.itemId == item.itemId else {
+        guard
+            plan.itemReference(
+                slotIndex: item.slotIndex,
+                rank: item.rank,
+                candidateId: item.candidateId
+            )?.itemId == item.itemId
+        else {
             consumptionMessage = "This plan item is unavailable. Refresh the plan."
             return
         }
@@ -343,10 +378,13 @@ final class TodayViewModel {
             merge(entry)
             pendingEvents[key] = nil
             await fetchLedger(for: requestDate())
+            await onNutritionRecorded()
+            await publishPlanState()
         } catch BackendError.rejected(_, let code, _) where code == "consumption_conflict" {
             pendingEvents[key] = nil
             consumptionMessage = "That event conflicts with an existing record."
             await reloadConsumption(for: plan.runId)
+            await publishPlanState()
         } catch BackendError.rejected(_, let code, _)
             where code == "consumption_target_not_found"
         {
@@ -368,11 +406,13 @@ final class TodayViewModel {
 
     func resetForSignOut() {
         subject = nil
+        ledgerRequestToken = nil
         phase = .signedOut
         trendPhase = .signedOut
         ledgerPhase = .signedOut
         nextMealPhase = .signedOut
         consumptionByItem = [:]
+        isPlanConsumptionStatusResolved = false
         consumptionMessage = nil
         regenerationMessage = nil
         isRegenerating = false
@@ -406,12 +446,11 @@ final class TodayViewModel {
         trendPhase = .loading
         ledgerPhase = .loading
         nextMealPhase = .loading
-        await fetchCanonicalPlan(fallback: cached)
-        guard self.subject != nil else { return }
+        async let plan: Void = fetchCanonicalPlan(fallback: cached)
         async let trend: Void = fetchTrend(asOfDate: date)
         async let ledger: Void = fetchLedger(for: date)
         async let nextMeal: Void = fetchLatestNextMeal(expectedSubject: subject, for: date)
-        _ = await (trend, ledger, nextMeal)
+        _ = await (plan, trend, ledger, nextMeal)
     }
 
     private func fetchLatestNextMeal(expectedSubject: String, for date: Date) async {
@@ -514,17 +553,21 @@ final class TodayViewModel {
     }
 
     private func fetchLedger(for date: Date) async {
+        guard let expectedSubject = subject else { return }
+        let token = UUID()
+        ledgerRequestToken = token
         do {
             let ledger = try await backend.fetchDailyNutritionLedger(
                 date: date,
                 timezone: timezoneIdentifier()
             )
-            guard subject != nil else { return }
+            guard subject == expectedSubject, ledgerRequestToken == token else { return }
             ledgerPhase = .result(ledger)
         } catch BackendError.unauthorized {
+            guard subject == expectedSubject, ledgerRequestToken == token else { return }
             transitionToSignedOut()
         } catch {
-            guard subject != nil else { return }
+            guard subject == expectedSubject, ledgerRequestToken == token else { return }
             ledgerPhase = .error("Today’s nutrition totals are temporarily unavailable.")
         }
     }
@@ -536,6 +579,7 @@ final class TodayViewModel {
             transitionToSignedOut()
             return
         }
+        isPlanConsumptionStatusResolved = false
         do {
             let response = try await backend.fetchDayPlan(date: requestDate())
             switch response {
@@ -548,23 +592,31 @@ final class TodayViewModel {
                 _ = cache.save(.completed(plan), forSubject: subject)
                 phase = .completed(plan)
                 await reloadConsumption(for: plan.runId)
+                await publishPlanState()
             case .noPlan(let value):
                 regenerationMessage = nil
                 consumptionByItem = [:]
+                isPlanConsumptionStatusResolved = false
                 phase = .noPlan(value)
+                await onPlanStateChanged(nil, [:], timezoneIdentifier())
             case .notGenerated:
                 regenerationMessage = nil
                 consumptionByItem = [:]
+                isPlanConsumptionStatusResolved = false
                 phase = .notGenerated
+                await onPlanStateChanged(nil, [:], timezoneIdentifier())
             }
         } catch BackendError.unauthorized {
             transitionToSignedOut()
         } catch {
-            let cached = fallback ?? matchingCachedPlan(
-                subject: subject,
-                expectedDay: WireDay.string(from: requestDate())
-            )
+            let cached =
+                fallback
+                ?? matchingCachedPlan(
+                    subject: subject,
+                    expectedDay: WireDay.string(from: requestDate())
+                )
             phase = .offline(plan: cached?.plan, cachedAt: cached?.cachedAt)
+            await onPlanStateChanged(nil, [:], timezoneIdentifier())
         }
     }
 
@@ -592,11 +644,14 @@ final class TodayViewModel {
                 consumptionMessage = nil
                 phase = .completed(plan)
                 await reloadConsumption(for: plan.runId)
+                await publishPlanState()
             case .noPlan(let value):
                 cache.clear(forSubject: expectedSubject)
                 regenerationMessage = nil
                 consumptionByItem = [:]
+                isPlanConsumptionStatusResolved = false
                 phase = .noPlan(value)
+                await onPlanStateChanged(nil, [:], timezoneIdentifier())
             case .notGenerated:
                 restoreAfterFailedRegeneration(
                     expectedSubject: expectedSubject,
@@ -628,9 +683,11 @@ final class TodayViewModel {
     }
 
     private func reloadConsumption(for runId: UUID) async {
+        isPlanConsumptionStatusResolved = false
         do {
             let response = try await backend.listConsumption(runId: runId)
             consumptionByItem = Dictionary(grouping: response.entries, by: \.itemId)
+            isPlanConsumptionStatusResolved = true
         } catch BackendError.unauthorized {
             transitionToSignedOut()
         } catch {
@@ -649,13 +706,18 @@ final class TodayViewModel {
         consumptionByItem[entry.itemId] = entries
     }
 
+    private func publishPlanState() async {
+        let notificationPlan = isPlanConsumptionStatusResolved ? displayedPlan : nil
+        await onPlanStateChanged(notificationPlan, consumptionByItem, timezoneIdentifier())
+    }
+
     private func matchingCachedPlan(
         subject: String,
         expectedDay: String
     ) -> (plan: CompletedDayPlan, cachedAt: Date)? {
         guard let cached = cache.load(forSubject: subject),
-              cached.planDate == expectedDay,
-              case .completed(let plan) = cached.response
+            cached.planDate == expectedDay,
+            case .completed(let plan) = cached.response
         else {
             return nil
         }
@@ -669,9 +731,6 @@ final class TodayViewModel {
     }
 
     private static func localTodayRequestDate() -> Date {
-        let local = Calendar.current.dateComponents([.year, .month, .day], from: Date())
-        var utc = Calendar(identifier: .gregorian)
-        utc.timeZone = TimeZone(secondsFromGMT: 0)!
-        return utc.date(from: local) ?? Date()
+        WireDay.localRequestDate()
     }
 }

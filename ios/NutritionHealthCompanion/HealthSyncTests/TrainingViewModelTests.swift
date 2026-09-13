@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import NutritionHealthCompanion
 
 @MainActor
@@ -356,7 +357,7 @@ final class TrainingViewModelTests: XCTestCase {
         volumeExerciseCount: 1,
         exercises: [occurrence]
     )
-    private static let recent = TrainingAnalyticsRecentResponse(
+    static let recent = TrainingAnalyticsRecentResponse(
         policyVersion: "owner-training-analytics.v1", sessions: [session]
     )
     private static let emptyRecent = TrainingAnalyticsRecentResponse(
@@ -420,7 +421,7 @@ final class TrainingViewModelTests: XCTestCase {
         reasonCodes: ["insufficient_history"],
         limitations: ["advisory_only"]
     )
-    private static let history = ExerciseTrainingHistoryResponse(
+    static let history = ExerciseTrainingHistoryResponse(
         policyVersion: "owner-training-analytics.v1",
         sourceSystem: "hevy",
         sourceExerciseId: "fixture-row",

@@ -16,8 +16,10 @@ from nutrition_agent.domain.next_meal import (
     recommendation_from_artifact,
 )
 from nutrition_agent.domain.nutrition.ledger import (
+    ConsumedNutritionEvidence,
     DailyNutritionLedger,
     DailyNutritionTarget,
+    NutritionAuthority,
     NutritionCompleteness,
 )
 from nutrition_agent.domain.nutrition.targets import GoalKind
@@ -579,11 +581,37 @@ def test_elapsed_schedule_is_typed_fail_closed_and_persistable() -> None:
         consumed_items=(),
         reason_codes=("no_consumption",),
     )
+    incomplete_item = ConsumedNutritionEvidence(
+        entry_id=UUID(int=910),
+        recorded_at=NOW,
+        plan_run_id=None,
+        plan_version_id=None,
+        plan_item_id=None,
+        meal_context="lunch",
+        candidate_id="manual:910",
+        item_name="Partial label",
+        configuration_summary=None,
+        authority=NutritionAuthority.USER_ENTERED,
+        confidence="user_entered",
+        calories_kcal=Decimal("300"),
+        protein_g=None,
+        unknown_nutrients=("protein_g", "fiber_g"),
+        provenance_summary="frozen",
+    )
     incomplete_status, incomplete_reasons, incomplete_artifact = build_next_meal_artifact(
         local_date=DAY,
         timezone="America/New_York",
         decision_at=NOW,
-        ledger=replace(ledger, nutrition_completeness=NutritionCompleteness.PARTIAL),
+        ledger=replace(
+            ledger,
+            consumed_item_count=1,
+            known_calories_consumed=Decimal("300"),
+            known_protein_g_consumed=None,
+            remaining_known_calories=Decimal("1900"),
+            remaining_known_protein_g=None,
+            nutrition_completeness=NutritionCompleteness.PARTIAL,
+            consumed_items=(incomplete_item,),
+        ),
         schedule=schedule,
         exceptions=(),
         menu=MenuDayView(
@@ -599,10 +627,48 @@ def test_elapsed_schedule_is_typed_fail_closed_and_persistable() -> None:
         target_policy_version="target.v1",
     )
     assert incomplete_status is NextMealStatus.INCOMPLETE_LEDGER_NUTRITION
-    assert incomplete_reasons == ("consumed_nutrition_not_complete",)
+    assert incomplete_reasons == ("recorded_calories_or_protein_missing",)
     incomplete_ledger = cast(dict[str, object], incomplete_artifact["ledger"])
     assert incomplete_ledger["nutrition_completeness"] == "partial"
-    assert incomplete_ledger["remaining_calories"] == "2200"
+    assert incomplete_ledger["remaining_calories"] == "1900"
+
+    micronutrient_only = replace(
+        incomplete_item,
+        protein_g=Decimal("25"),
+        unknown_nutrients=("fiber_g", "sodium_mg"),
+    )
+    micronutrient_status, _, micronutrient_artifact = build_next_meal_artifact(
+        local_date=DAY,
+        timezone="America/New_York",
+        decision_at=NOW,
+        ledger=replace(
+            ledger,
+            consumed_item_count=1,
+            known_calories_consumed=Decimal("300"),
+            known_protein_g_consumed=Decimal("25"),
+            remaining_known_calories=Decimal("1900"),
+            remaining_known_protein_g=Decimal("94"),
+            nutrition_completeness=NutritionCompleteness.PARTIAL,
+            consumed_items=(micronutrient_only,),
+        ),
+        schedule=schedule,
+        exceptions=(),
+        menu=MenuDayView(
+            service_date=DAY,
+            periods={MealPeriod.DINNER: PeriodMenu(offerings=(), explicitly_empty=True)},
+            fetched_at=NOW,
+            snapshot_sha256="b" * 64,
+        ),
+        planner_policy=planner,
+        slot_policies={MealContext.DINNER: SlotPolicy(MealContext.DINNER)},
+        configurable_meal_definitions=(),
+        target_policy_version_id=TARGET_ID,
+        target_policy_version="target.v1",
+    )
+    assert micronutrient_status is not NextMealStatus.INCOMPLETE_LEDGER_NUTRITION
+    assert micronutrient_artifact["next_meal_policy_version"] == (
+        "next-meal.remaining-opportunities.v2"
+    )
 
     no_target_status, no_target_reasons, _ = build_next_meal_artifact(
         local_date=DAY,

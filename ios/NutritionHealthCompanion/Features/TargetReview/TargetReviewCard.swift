@@ -3,9 +3,6 @@ import SwiftUI
 struct TargetReviewCard: View {
     @State private var viewModel: TargetReviewViewModel
     @State private var desiredRate = "0"
-    @State private var initialCalories = ""
-    @State private var calorieWeight = "1"
-    @State private var targetRationale = ""
     @State private var showingProteinRejection = false
 
     init(viewModel: TargetReviewViewModel) {
@@ -14,15 +11,14 @@ struct TargetReviewCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Target Review").font(.headline)
+            Text("Goal & calorie review").font(.headline)
             content
             Divider()
             proteinContent
         }
         .font(.subheadline)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(Color.secondary.opacity(0.08))
+        .padding(.vertical, 6)
         .confirmationDialog(
             "Reject this protein proposal?",
             isPresented: $showingProteinRejection,
@@ -41,7 +37,7 @@ struct TargetReviewCard: View {
     private var content: some View {
         if viewModel.isCreatingNewGoalVersion {
             goalSetup
-            Text("Saving creates a new goal version; existing goal history is retained.")
+            Text("Your previous goals remain in history.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if case .goalInputError(let message) = viewModel.phase {
@@ -66,7 +62,10 @@ struct TargetReviewCard: View {
                 Text(message).foregroundStyle(.red)
             }
         case .goalConfigured(let goal):
-            Text("Goal: \(goal.direction.rawValue), \(goal.desiredRateKgPerWeek) kg/week")
+            Text(
+                "Goal: \(goal.direction.rawValue), "
+                    + "\(NytrNumberFormat.detail(goal.desiredRateKgPerWeek, maximumFractionDigits: 2) ?? goal.desiredRateKgPerWeek) kg/week"
+            )
             Button("Set new goal") { viewModel.beginNewGoalVersion() }
                 .buttonStyle(.bordered)
                 .disabled(viewModel.targetActionsDisabled)
@@ -94,7 +93,8 @@ struct TargetReviewCard: View {
             proposal(review)
             VStack(alignment: .leading, spacing: 8) {
                 Button("Approve") { Task { await viewModel.decide(.approved) } }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.borderedProminent).tint(NytrDesign.buttonFill)
+                    .controlSize(.large)
                 Button("Reject") { Task { await viewModel.decide(.rejected) } }
                     .buttonStyle(.bordered)
             }
@@ -127,33 +127,13 @@ struct TargetReviewCard: View {
 
     private var initialTargetSetup: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Approve the first calorie target")
+            Text("No approved calorie target")
                 .font(.subheadline.bold())
             Text(
-                "Enter a target you chose. Nytr will not calculate it from your goal or weight."
+                "Save your profile below, then create a starting estimate. Review and approve it before it becomes active."
             )
             .foregroundStyle(.secondary)
-            TextField("Daily calories (kcal)", text: $initialCalories)
-                .textFieldStyle(.roundedBorder)
-            TextField("Calorie scoring weight", text: $calorieWeight)
-                .textFieldStyle(.roundedBorder)
-            TextField("Approval rationale", text: $targetRationale)
-                .textFieldStyle(.roundedBorder)
-            Button("Approve initial target") {
-                Task {
-                    await viewModel.approveInitialCalorieTarget(
-                        caloriesKcal: initialCalories,
-                        calorieWeight: calorieWeight,
-                        rationale: targetRationale
-                    )
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(viewModel.targetActionsDisabled)
-            if let message = viewModel.initialTargetMessage {
-                Text(message).foregroundStyle(.orange)
-            }
-            Text("Approval creates an immutable target version and keeps its rationale.")
+            Text("You decide when a target becomes active.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -179,7 +159,7 @@ struct TargetReviewCard: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("goal-direction-selection")
-            TextField("kg/week", text: $desiredRate)
+            NytrNumberField(title: "Desired change (kg/week)", text: $desiredRate)
                 .textFieldStyle(.roundedBorder)
             Button("Save goal") {
                 Task {
@@ -188,7 +168,8 @@ struct TargetReviewCard: View {
                     )
                 }
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.borderedProminent).tint(NytrDesign.buttonFill)
+            .controlSize(.large)
             .disabled(viewModel.targetActionsDisabled)
         }
     }
@@ -205,9 +186,14 @@ struct TargetReviewCard: View {
             Text("Protein target").font(.subheadline.bold())
             if viewModel.isTargetPolicyResolved {
                 if let floor = viewModel.approvedProteinFloor {
-                    LabeledContent("Active protein floor", value: "\(floor.value) g/day")
+                    NytrMetricRow(
+                        "Active protein floor",
+                        value: "\(NytrNumberFormat.whole(floor.value) ?? floor.value) g/day"
+                    )
                     if let policy = viewModel.latestTargetPolicy {
-                        LabeledContent("Target version", value: policy.policyVersion)
+                        DisclosureGroup("Target details") {
+                            NytrMetricRow("Target version", value: policy.policyVersion)
+                        }
                     }
                 } else {
                     Text("No approved protein floor is active.")
@@ -232,10 +218,10 @@ struct TargetReviewCard: View {
                 Text("A proposal was not created.").foregroundStyle(.orange)
                 Text(detail).foregroundStyle(.secondary)
                 Text(
-                    "Nytr will not fabricate a proposal. If evidence is missing, sync a current HealthKit body-weight measurement, then check again."
+                    "Sync a recent weight from Apple Health, then check again."
                 )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 generateProteinButton("Check for protein proposal")
             case .networkFailure(let message, let previous):
                 if let previous { proteinProposalDetails(previous) }
@@ -257,20 +243,26 @@ struct TargetReviewCard: View {
     private func proteinProposalDetails(_ proposal: ProteinTargetProposalResponse) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Protein floor proposal").font(.subheadline.bold())
-            LabeledContent("Proposed", value: "\(proposal.proposedProteinG) g/day")
-            LabeledContent("Goal type", value: "Minimum protein floor")
-            LabeledContent("Weight evidence", value: "\(proposal.bodyMassKg) kg")
-            LabeledContent(
+            NytrMetricRow(
+                "Proposed",
+                value: "\(NytrNumberFormat.whole(proposal.proposedProteinG) ?? proposal.proposedProteinG) g/day"
+            )
+            NytrMetricRow("Goal type", value: "Minimum protein floor")
+            NytrMetricRow(
+                "Weight evidence",
+                value: "\(NytrNumberFormat.detail(proposal.bodyMassKg) ?? proposal.bodyMassKg) kg"
+            )
+            NytrMetricRow(
                 "Measured",
                 value: proposal.calculation.bodyMass.measuredAt.formatted(
                     date: .abbreviated, time: .shortened)
             )
-            LabeledContent("Policy", value: proposal.policyVersion)
-            Text("Evidence source: \(proposal.provenance)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            DisclosureGroup("Calculation details") {
+                NytrMetricRow("Policy", value: proposal.policyVersion)
+                NytrMetricRow("Evidence source", value: proposal.provenance)
+            }
             Text(
-                "Weight evidence comes from persisted HealthKit data. This deterministic proposal is not a medical diagnosis and is not applied automatically. Approval creates a new active target-policy version; rejection leaves the active target unchanged. Existing target history remains preserved."
+                "Based on your synced Apple Health weight. This proposal is not active until approved. Rejecting it leaves your target unchanged."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -279,14 +271,15 @@ struct TargetReviewCard: View {
 
     @ViewBuilder
     private func proteinDecisionControls(_ proposal: ProteinTargetProposalResponse) -> some View {
-        let acknowledged = viewModel.proteinDecisionResult?.proposalId == proposal.proposalId
+        let acknowledged =
+            viewModel.proteinDecisionResult?.proposalId == proposal.proposalId
             ? viewModel.proteinDecisionResult?.decision
             : proposal.decisionStatus
         switch acknowledged {
         case .approved:
             Label("Approved", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
-            Text("Approval created a new immutable target-policy version.")
+            Text("Your approved protein target is active.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             generateProteinButton("Check for updated proposal")
@@ -298,7 +291,7 @@ struct TargetReviewCard: View {
                 .foregroundStyle(.secondary)
             generateProteinButton("Check for updated proposal")
         case nil:
-            Text("Review the evidence before making this durable nutrition decision.")
+            Text("Review the weight and proposed amount before approving.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Toggle(
@@ -313,7 +306,8 @@ struct TargetReviewCard: View {
                 Button("Approve protein floor") {
                     Task { await viewModel.decideProteinProposal(.approved) }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.borderedProminent).tint(NytrDesign.buttonFill)
+                .controlSize(.large)
                 .disabled(!viewModel.canApproveProteinProposal)
                 Button("Reject proposal") { showingProteinRejection = true }
                     .buttonStyle(.bordered)
@@ -330,21 +324,27 @@ struct TargetReviewCard: View {
 
     private func reviewEvidence(_ review: TargetReviewDetail) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            LabeledContent(
+            NytrMetricRow(
                 "Observed trend",
-                value: review.trend.weeklyRateKg.map { "\($0) kg/week" } ?? "Unavailable"
+                value: review.trend.weeklyRateKg.map {
+                    "\(NytrNumberFormat.detail($0, maximumFractionDigits: 2) ?? $0) kg/week"
+                } ?? "Unavailable"
             )
-            LabeledContent(
+            NytrMetricRow(
                 "Desired rate",
-                value: "\(review.goalPolicy.desiredRateKgPerWeek) kg/week"
+                value:
+                    "\(NytrNumberFormat.detail(review.goalPolicy.desiredRateKgPerWeek, maximumFractionDigits: 2) ?? review.goalPolicy.desiredRateKgPerWeek) kg/week"
             )
-            LabeledContent(
+            NytrMetricRow(
                 "Acceptable band",
-                value: "\(review.goalPolicy.acceptableRateLowerKgPerWeek) to \(review.goalPolicy.acceptableRateUpperKgPerWeek)"
+                value:
+                    "\(NytrNumberFormat.detail(review.goalPolicy.acceptableRateLowerKgPerWeek, maximumFractionDigits: 2) ?? review.goalPolicy.acceptableRateLowerKgPerWeek) to "
+                    + "\(NytrNumberFormat.detail(review.goalPolicy.acceptableRateUpperKgPerWeek, maximumFractionDigits: 2) ?? review.goalPolicy.acceptableRateUpperKgPerWeek) kg/week"
             )
-            LabeledContent(
+            NytrMetricRow(
                 "Current target",
-                value: "\(review.targetPolicy.currentCaloriesKcal) kcal/day"
+                value:
+                    "\(NytrNumberFormat.whole(review.targetPolicy.currentCaloriesKcal) ?? review.targetPolicy.currentCaloriesKcal) kcal/day"
             )
         }
     }
@@ -352,13 +352,17 @@ struct TargetReviewCard: View {
     private func proposal(_ review: TargetReviewDetail) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Review this exact change").font(.subheadline.bold())
-            LabeledContent(
+            NytrMetricRow(
                 "Proposed",
-                value: "\(review.targetPolicy.proposedCaloriesKcal ?? "Unavailable") kcal/day"
+                value: review.targetPolicy.proposedCaloriesKcal.map {
+                    "\(NytrNumberFormat.whole($0) ?? $0) kcal/day"
+                } ?? "Unavailable"
             )
-            LabeledContent(
+            NytrMetricRow(
                 "Change",
-                value: "\(review.targetPolicy.calorieDelta ?? "Unavailable") kcal/day"
+                value: review.targetPolicy.calorieDelta.map {
+                    "\(NytrNumberFormat.whole($0) ?? $0) kcal/day"
+                } ?? "Unavailable"
             )
             Text("This is a deterministic target review, not medical advice.")
                 .font(.caption)

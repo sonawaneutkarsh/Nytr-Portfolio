@@ -21,7 +21,7 @@ NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
 def _added(**overrides: object) -> dict[str, object]:
     base: dict[str, object] = {
         "sample_uuid": "00000000-0000-0000-0000-000000000001",
-        "value": "72.000",
+        "value": "68.039",
         "sample_start": "2026-08-21T07:12:00+00:00",
         "sample_end": "2026-08-21T07:12:00+00:00",
     }
@@ -42,7 +42,7 @@ def test_valid_sample_parses_to_exact_decimal() -> None:
     batch = _validate()
     assert len(batch.added) == 1
     sample = batch.added[0]
-    assert str(sample.value_kg) == "72.000"
+    assert str(sample.value_kg) == "68.039"
     assert sample.sample_start.tzinfo is UTC
 
 
@@ -59,7 +59,7 @@ def test_blank_source_text_becomes_none() -> None:
 
 def test_json_float_value_is_rejected() -> None:
     with pytest.raises(BatchRejected):
-        _validate([_added(value=72.000)])
+        _validate([_added(value=68.039)])
 
 
 def test_more_than_three_decimal_places_rejected() -> None:

@@ -9,6 +9,7 @@ from nutrition_agent.api.auth import TokenVerifier
 from nutrition_agent.api.settings import HealthApiSettings
 from nutrition_agent.application.health_sync import HealthBodyMassSyncUseCase, HealthSyncDeps
 from nutrition_agent.application.manual_foods import (
+    AdjustManualFoodUseCase,
     CreateCustomFoodUseCase,
     ListCustomFoodsUseCase,
     RecordManualFoodUseCase,
@@ -47,6 +48,7 @@ def _client() -> TestClient:
     app.state.create_custom_food_use_case = CreateCustomFoodUseCase(repo, Clock(), ids)
     app.state.list_custom_foods_use_case = ListCustomFoodsUseCase(repo)
     app.state.record_manual_food_use_case = RecordManualFoodUseCase(repo, Clock(), ids)
+    app.state.adjust_manual_food_use_case = AdjustManualFoodUseCase(repo, Clock(), ids)
     return TestClient(app)
 
 
@@ -108,3 +110,105 @@ def test_create_list_record_and_no_client_owner() -> None:
 def test_routes_require_authentication() -> None:
     client = _client()
     assert client.get("/v1/nutrition/custom-foods").status_code == 401
+
+
+def test_preview_is_authenticated_read_only_and_matches_persisted_quantity() -> None:
+    client = _client()
+    food = client.post(
+        "/v1/nutrition/custom-foods",
+        headers=_headers(),
+        json={
+            "name": "Synthetic whey",
+            "serving_description": "1 serving (30 g)",
+            "serving_amount": "30",
+            "serving_unit": "g",
+            "nutrition": {"calories_kcal": "120", "protein_g": "25"},
+        },
+    ).json()
+    request = {
+        "food_id": food["food_id"],
+        "food_version_id": food["version_id"],
+        "amount": "1.5",
+        "unit": "servings",
+    }
+    assert client.post("/v1/nutrition/food-preview", json=request).status_code == 401
+    preview = client.post("/v1/nutrition/food-preview", headers=_headers(), json=request)
+    assert preview.status_code == 200
+    value = preview.json()
+    assert value["consumed_amount"] == "45.0"
+    recorded = client.post(
+        "/v1/nutrition/manual-consumption",
+        headers=_headers(),
+        json={
+            "food_id": food["food_id"],
+            "food_version_id": food["version_id"],
+            "consumed_amount": value["consumed_amount"],
+            "consumed_unit": value["consumed_unit"],
+            "meal_period": "breakfast",
+            "client_event_id": str(UUID(int=9001)),
+        },
+    )
+    assert recorded.status_code == 201
+    assert recorded.json()["nutrition"] == value["nutrition"]
+    assert value["nutrition"]["fiber_g"] is None
+    for amount in ("0", "-1", "NaN", "80garbage"):
+        assert (
+            client.post(
+                "/v1/nutrition/food-preview", headers=_headers(), json={**request, "amount": amount}
+            ).status_code
+            == 400
+        )
+
+
+def test_correction_preview_correction_and_void_are_append_only() -> None:
+    client = _client()
+    food = client.post(
+        "/v1/nutrition/custom-foods",
+        headers=_headers(),
+        json={
+            "name": "Oats",
+            "serving_description": "one bowl",
+            "serving_amount": "1",
+            "serving_unit": "bowl",
+            "nutrition": {"calories_kcal": "400", "protein_g": "20"},
+        },
+    ).json()
+    original = client.post(
+        "/v1/nutrition/manual-consumption",
+        headers=_headers(),
+        json={
+            "food_id": food["food_id"],
+            "food_version_id": food["version_id"],
+            "consumed_amount": "1",
+            "consumed_unit": "bowl",
+            "meal_period": "lunch",
+            "client_event_id": str(UUID(int=9100)),
+        },
+    ).json()
+    path = f"/v1/nutrition/manual-consumption/{original['entry_id']}"
+    preview = client.post(
+        f"{path}/preview-correction",
+        headers=_headers(),
+        json={"amount": "1.5", "unit": "bowl"},
+    )
+    assert preview.status_code == 200
+    assert preview.json()["nutrition"]["calories_kcal"] == "600.0"
+    correction_body = {
+        "amount": preview.json()["consumed_amount"],
+        "unit": preview.json()["consumed_unit"],
+        "client_event_id": str(UUID(int=9101)),
+    }
+    corrected = client.post(f"{path}/corrections", headers=_headers(), json=correction_body)
+    assert corrected.status_code == 201
+    assert corrected.json()["replacement"]["nutrition"] == preview.json()["nutrition"]
+    replay = client.post(f"{path}/corrections", headers=_headers(), json=correction_body)
+    assert replay.status_code == 200
+    replacement_id = corrected.json()["replacement_entry_id"]
+    removed = client.post(
+        f"/v1/nutrition/manual-consumption/{replacement_id}/void",
+        headers=_headers(),
+        json={"client_event_id": str(UUID(int=9102))},
+    )
+    assert removed.status_code == 201
+    assert removed.json()["kind"] == "void"
+    assert removed.json()["replacement"] is None

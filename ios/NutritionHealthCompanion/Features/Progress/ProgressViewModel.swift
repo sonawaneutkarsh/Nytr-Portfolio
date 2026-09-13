@@ -51,7 +51,7 @@ final class ProgressViewModel {
 
     init(
         backend: any BackendClient,
-        requestDate: @escaping () -> Date = Date.init,
+        requestDate: @escaping () -> Date = { WireDay.localRequestDate() },
         timezoneIdentifier: @escaping () -> String = { TimeZone.current.identifier },
         onUnauthorized: @escaping @MainActor () -> Void = {}
     ) {

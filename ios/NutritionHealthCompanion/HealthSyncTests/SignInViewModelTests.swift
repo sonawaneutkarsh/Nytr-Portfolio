@@ -117,7 +117,7 @@ final class SignInViewModelTests: XCTestCase {
         let store = RecordingTokenStore()
         let session = makeSession(store: store)
         let viewModel = SignInViewModel(requester: session)
-        viewModel.email = " demo@example.invalid "
+        viewModel.email = " owner@example.com "
 
         StubProtocol.handler = { request in
             XCTAssertEqual(request.httpMethod, "POST")
@@ -133,7 +133,7 @@ final class SignInViewModelTests: XCTestCase {
                 "Bearer public-anon-key"
             )
             let body = try! JSONSerialization.jsonObject(with: StubRequestBody.data(from: request)) as! [String: Any]
-        XCTAssertEqual(body["email"] as? String, "demo@example.invalid")
+            XCTAssertEqual(body["email"] as? String, "owner@example.com")
             XCTAssertEqual(body["create_user"] as? Bool, true)
             XCTAssertNil(body["code_challenge"])
             return (200, Data())
@@ -154,7 +154,7 @@ final class SignInViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.phase, .failed(message: "Enter a valid email address."))
 
         StubProtocol.handler = { _ in (429, Data("provider details must stay hidden".utf8)) }
-        viewModel.email = "demo@example.invalid"
+        viewModel.email = "owner@example.com"
         await viewModel.sendMagicLink()
         XCTAssertEqual(
             viewModel.phase,
@@ -167,7 +167,7 @@ final class SignInViewModelTests: XCTestCase {
     func test_duplicateTapWhileSendingMakesOneRequest() async {
         let requester = BlockingRequester()
         let viewModel = SignInViewModel(requester: requester)
-        viewModel.email = "demo@example.invalid"
+        viewModel.email = "owner@example.com"
 
         let first = Task { await viewModel.sendMagicLink() }
         await Task.yield()
@@ -255,6 +255,37 @@ final class SignInViewModelTests: XCTestCase {
         let token = try await session.validAccessToken()
         XCTAssertEqual(token, refreshedJWT)
         XCTAssertEqual(store.load()?.refreshToken, "refresh-new")
+    }
+
+    func test_concurrentExpiredTokenRequestsReuseOneRefresh() async throws {
+        let store = RecordingTokenStore(AuthTokens(
+            accessToken: "expired",
+            refreshToken: "refresh-old",
+            expiresAt: Date(timeIntervalSince1970: 1_000)
+        ))
+        let session = makeSession(store: store)
+        let refreshedJWT = jwt(subject: "owner-subject")
+        let lock = NSLock()
+        nonisolated(unsafe) var refreshCalls = 0
+        StubProtocol.handler = { _ in
+            lock.lock()
+            refreshCalls += 1
+            lock.unlock()
+            return (200, Data("""
+            {"access_token":"\(refreshedJWT)","refresh_token":"refresh-new","expires_at":9000}
+            """.utf8))
+        }
+
+        async let first = session.validAccessToken()
+        async let second = session.validAccessToken()
+        async let third = session.validAccessToken()
+        let values = try await [first, second, third]
+
+        XCTAssertEqual(values, [refreshedJWT, refreshedJWT, refreshedJWT])
+        lock.lock()
+        let calls = refreshCalls
+        lock.unlock()
+        XCTAssertEqual(calls, 1)
     }
 
     @MainActor

@@ -32,6 +32,7 @@ struct NextMealLedgerDTO: Codable, Equatable, Sendable {
     let knownProteinGConsumed: String?
     let remainingCalories: String?
     let remainingProteinG: String?
+    var unknownNutrients: [String]? = nil
 
     enum CodingKeys: String, CodingKey {
         case consumedEntryIds = "consumed_entry_ids"
@@ -39,6 +40,7 @@ struct NextMealLedgerDTO: Codable, Equatable, Sendable {
         case knownProteinGConsumed = "known_protein_g_consumed"
         case remainingCalories = "remaining_calories"
         case remainingProteinG = "remaining_protein_g"
+        case unknownNutrients = "unknown_nutrients"
     }
 }
 
@@ -97,6 +99,7 @@ struct NextMealArtifactDTO: Codable, Equatable, Sendable {
 }
 
 struct NextMealRecommendationResponse: Codable, Equatable, Sendable {
+    var nutritionQuality: NutritionQualityDTO? = nil
     let recommendationId: UUID
     let clientRequestId: UUID
     let localDate: String
@@ -118,6 +121,7 @@ struct NextMealRecommendationResponse: Codable, Equatable, Sendable {
         case status
         case reasonCodes = "reason_codes"
         case inputsDigest = "inputs_digest"
+        case nutritionQuality = "nutrition_quality"
         case artifactSha256 = "artifact_sha256"
         case artifact
         case created
@@ -171,5 +175,33 @@ struct NextMealConsumptionResponse: Codable, Equatable, Sendable {
         case unknownNutrients = "unknown_nutrients"
         case selectedCandidateSha256 = "selected_candidate_sha256"
         case created
+    }
+}
+
+struct NutritionQualityDTO: Codable, Equatable, Sendable {
+    let policyVersion: String
+    let confidence: String
+    let scope: String
+    let findings: [NutrientQualityFinding]
+    let missingNutrients: [String]
+    let notice: String
+    enum CodingKeys: String, CodingKey {
+        case policyVersion = "policy_version"
+        case missingNutrients = "missing_nutrients"
+        case confidence, scope, findings, notice
+    }
+}
+struct NutrientQualityFinding: Codable, Equatable, Sendable, Identifiable {
+    let nutrient: String
+    let label: String
+    let amount: String
+    let unit: String
+    let dailyValuePercent: String
+    let band: String
+    let message: String
+    var id: String { nutrient }
+    enum CodingKeys: String, CodingKey {
+        case nutrient, label, amount, unit, band, message
+        case dailyValuePercent = "daily_value_percent"
     }
 }

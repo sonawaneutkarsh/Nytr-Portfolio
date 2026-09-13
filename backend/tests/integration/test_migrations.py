@@ -168,7 +168,7 @@ def test_sql_repositories_roundtrip_and_idempotency() -> None:
             category_name="DELI DAILY",
             category_position=8,
             item_position=3,
-            source_mid="215804801",
+            source_mid="900000001",
             dietary_tags=(),
             profile_id=None,
             snapshot_id=ref.snapshot_id,

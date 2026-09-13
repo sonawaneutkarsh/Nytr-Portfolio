@@ -115,12 +115,16 @@ struct AIReviewBodyTrendDTO: Decodable, Equatable, Sendable {
     let latestMeasurementAgeDays: Int?
     let representedDayCount: Int
     let coverageSpanDays: Int
+    var trailing7dAverageKg: String? = nil
+    var weeklyRateKg: String? = nil
 
     private enum CodingKeys: String, CodingKey {
         case status
         case latestMeasurementAgeDays = "latest_measurement_age_days"
         case representedDayCount = "represented_day_count"
         case coverageSpanDays = "coverage_span_days"
+        case trailing7dAverageKg = "trailing_7d_average_kg"
+        case weeklyRateKg = "weekly_rate_kg"
     }
 }
 
@@ -130,6 +134,8 @@ struct AIReviewNutritionProgressDTO: Decodable, Equatable, Sendable {
     let calorieQuantifiedDays7d: Int
     let proteinQuantifiedDays7d: Int
     let includesEstimates7d: Bool
+    var averageRecordedCalories7d: String? = nil
+    var averageRecordedProteinG7d: String? = nil
 
     private enum CodingKeys: String, CodingKey {
         case daysWithRecords7d = "days_with_records_7d"
@@ -137,6 +143,8 @@ struct AIReviewNutritionProgressDTO: Decodable, Equatable, Sendable {
         case calorieQuantifiedDays7d = "calorie_quantified_days_7d"
         case proteinQuantifiedDays7d = "protein_quantified_days_7d"
         case includesEstimates7d = "includes_estimates_7d"
+        case averageRecordedCalories7d = "average_recorded_calories_7d"
+        case averageRecordedProteinG7d = "average_recorded_protein_g_7d"
     }
 }
 

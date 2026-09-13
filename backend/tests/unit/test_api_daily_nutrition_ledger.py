@@ -63,6 +63,9 @@ class _Evidence:
                 provenance_summary=(
                     "Owner-observed configuration with external reference nutrition"
                 ),
+                serving_description="one bowl",
+                serving_amount=Decimal("1"),
+                serving_unit="serving",
             ),
         )
 
@@ -160,6 +163,8 @@ def test_daily_ledger_requires_auth_and_returns_exact_decimal_strings() -> None:
     assert body["nutrition_authorities"] == ["partial"]
     assert body["consumed_items"][0]["plan_item_id"] == str(UUID(int=4))
     assert body["consumed_items"][0]["configuration_summary"] is not None
+    assert body["consumed_items"][0]["serving_amount"] == "1"
+    assert body["consumed_items"][0]["serving_unit"] == "serving"
 
 
 def test_invalid_timezone_and_storage_failure_are_safe() -> None:

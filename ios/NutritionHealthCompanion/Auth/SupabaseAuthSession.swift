@@ -17,6 +17,35 @@ protocol AppAuthSession: AccessTokenProvider, MagicLinkRequesting {
     func signOut() throws
 }
 
+private actor AccessTokenRefreshCoordinator {
+    private var inFlight: Task<String, Error>?
+
+    func validAccessToken(
+        tokens: any TokenStore,
+        now: Date,
+        refreshSkewSeconds: TimeInterval,
+        refresh: @escaping @Sendable (AuthTokens) async throws -> String
+    ) async throws -> String {
+        guard let current = tokens.load() else { throw AuthProviderError.needsSignIn }
+        if current.expiresAt.timeIntervalSince(now) > refreshSkewSeconds {
+            return current.accessToken
+        }
+        if let inFlight {
+            return try await inFlight.value
+        }
+        let task = Task { try await refresh(current) }
+        inFlight = task
+        do {
+            let token = try await task.value
+            inFlight = nil
+            return token
+        } catch {
+            inFlight = nil
+            throw error
+        }
+    }
+}
+
 /// The ONLY component that knows Supabase exists. Implements
 /// AccessTokenProvider: expiry-checked refresh, token persistence via
 /// TokenStore (Keychain), and mapping unrecoverable failures to needsSignIn.
@@ -29,6 +58,7 @@ struct SupabaseAuthSession: AppAuthSession {
     private let now: @Sendable () -> Date
     /// Refresh when expiring within this window.
     private let refreshSkewSeconds: TimeInterval = 60
+    private let refreshCoordinator: AccessTokenRefreshCoordinator
 
     init(
         supabaseURL: URL,
@@ -42,14 +72,16 @@ struct SupabaseAuthSession: AppAuthSession {
         self.tokens = tokens
         self.session = session
         self.now = now
+        refreshCoordinator = AccessTokenRefreshCoordinator()
     }
 
     func validAccessToken() async throws -> String {
-        guard let current = tokens.load() else { throw AuthProviderError.needsSignIn }
-        if current.expiresAt.timeIntervalSince(now()) > refreshSkewSeconds {
-            return current.accessToken
-        }
-        return try await refresh(current: current)
+        try await refreshCoordinator.validAccessToken(
+            tokens: tokens,
+            now: now(),
+            refreshSkewSeconds: refreshSkewSeconds,
+            refresh: { current in try await refresh(current: current) }
+        )
     }
 
     /// Requests Supabase's implicit passwordless-email flow. Omitting PKCE

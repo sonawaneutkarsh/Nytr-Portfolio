@@ -3,21 +3,36 @@ import SwiftUI
 // MARK: - Recent Workouts (main Training destination)
 
 struct TrainingView: View {
+    @AppStorage(TrainingWeightUnit.preferenceKey) private var weightUnit = "lb"
+    private var displayUnit: TrainingWeightUnit { TrainingWeightUnit(rawValue: weightUnit) ?? .lb }
     @State private var viewModel: TrainingViewModel
     let subject: String
+    let onShowSettings: () -> Void
 
-    init(viewModel: TrainingViewModel, subject: String) {
+    init(
+        viewModel: TrainingViewModel, subject: String,
+        onShowSettings: @escaping () -> Void = {}
+    ) {
         _viewModel = State(initialValue: viewModel)
         self.subject = subject
+        self.onShowSettings = onShowSettings
     }
 
     var body: some View {
         NavigationStack {
             List {
-                Section("Source") {
-                    Text(TrainingSourceAuthorityCopy.training)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                Section {
+                    NytrScreenHeader(
+                        eyebrow: "TRAINING", title: "Build on your last session",
+                        subtitle: "Your Hevy records. Nytr’s next-session guidance.",
+                        symbol: "figure.strengthtraining.traditional")
+                }.listRowBackground(Color.clear)
+                Section("Hevy · recorded workouts") {
+                    DisclosureGroup("About workout sources") {
+                        Text(TrainingSourceAuthorityCopy.training)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
                     Button {
                         Task { await viewModel.syncHevy() }
                     } label: {
@@ -59,29 +74,26 @@ struct TrainingView: View {
                         .foregroundStyle(.secondary)
                 case .empty:
                     Section {
-                        Text("No training sessions recorded yet.")
-                            .foregroundStyle(.secondary)
+                        NytrStateView(
+                            title: "Your next chapter starts here",
+                            message: "Sync a workout from Hevy to see your history and available coaching.",
+                            symbol: "dumbbell")
                     }
                 case .result(let response):
-                    Section {
-                        Text(
-                            "These factual Hevy analytics do not change nutrition targets or recorded consumption."
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
-                    ForEach(response.sessions) { session in
-                        NavigationLink {
-                            SessionDetailView(
-                                session: session,
-                                viewModel: viewModel,
-                                subject: subject
-                            )
-                        } label: {
-                            RecentSessionRow(session: session)
+                    Section("Workout history") {
+                        ForEach(response.sessions) { session in
+                            NavigationLink {
+                                SessionDetailView(
+                                    session: session,
+                                    viewModel: viewModel,
+                                    subject: subject
+                                )
+                            } label: {
+                                RecentSessionRow(session: session)
+                            }
                         }
-                    }
 
+                    }
                     NavigationLink {
                         ExerciseIndexView(viewModel: viewModel, subject: subject)
                     } label: {
@@ -90,9 +102,16 @@ struct TrainingView: View {
                 }
             }
             #if os(iOS)
-            .listStyle(.insetGrouped)
+                .listStyle(.insetGrouped)
             #endif
+            .nytrList()
             .navigationTitle("Training")
+            .toolbar {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    TrainingUnitPicker()
+                    NytrSettingsToolbarButton(action: onShowSettings)
+                }
+            }
             .refreshable { await viewModel.refreshRecent() }
         }
         .task(id: subject) { await viewModel.activate(subject: subject) }
@@ -102,28 +121,28 @@ struct TrainingView: View {
 // MARK: - Recent Session Row
 
 private struct RecentSessionRow: View {
+    @AppStorage(TrainingWeightUnit.preferenceKey) private var weightUnit = "lb"
+    private var displayUnit: TrainingWeightUnit { TrainingWeightUnit(rawValue: weightUnit) ?? .lb }
     let session: TrainingSessionAnalyticsDTO
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(session.title)
                 .font(.headline)
-            HStack {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(Self.formatDate(session.startedAt))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                Spacer()
                 Text("\(session.exerciseCount) exercise\(session.exerciseCount == 1 ? "" : "s")")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            HStack {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(setLabel(session))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if let volume = session.volumeKgReps {
-                    Spacer()
-                    Text("Eligible volume: \(volume) kg·reps")
+                    Text("Eligible volume: \(displayUnit.display(volume, volume: true))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -152,6 +171,8 @@ private struct RecentSessionRow: View {
 // MARK: - Session Detail
 
 struct SessionDetailView: View {
+    @AppStorage(TrainingWeightUnit.preferenceKey) private var weightUnit = "lb"
+    private var displayUnit: TrainingWeightUnit { TrainingWeightUnit(rawValue: weightUnit) ?? .lb }
     let session: TrainingSessionAnalyticsDTO
     let viewModel: TrainingViewModel
     let subject: String
@@ -159,30 +180,32 @@ struct SessionDetailView: View {
     var body: some View {
         List {
             Section("Summary") {
-                LabeledContent("Duration", value: Self.formatDuration(session.sessionDurationSeconds))
-                LabeledContent("Exercises", value: String(session.exerciseCount))
-                LabeledContent("Working Sets", value: String(session.workingSetCount))
-                LabeledContent("Recorded Sets", value: String(session.recordedSetCount))
+                NytrMetricRow("Duration", value: Self.formatDuration(session.sessionDurationSeconds))
+                NytrMetricRow("Exercises", value: String(session.exerciseCount))
+                NytrMetricRow("Working Sets", value: String(session.workingSetCount))
+                NytrMetricRow("Recorded Sets", value: String(session.recordedSetCount))
                 if session.warmupSetCount > 0 {
-                    LabeledContent("Warmup Sets", value: String(session.warmupSetCount))
+                    NytrMetricRow("Warmup Sets", value: String(session.warmupSetCount))
                 }
                 if session.unsupportedSetCount > 0 {
-                    LabeledContent("Other Sets", value: String(session.unsupportedSetCount))
+                    NytrMetricRow("Other Sets", value: String(session.unsupportedSetCount))
                 }
                 if let reps = session.repTotal {
-                    LabeledContent("Total Reps", value: String(reps))
+                    NytrMetricRow("Total Reps", value: String(reps))
                 }
                 if let volume = session.volumeKgReps {
-                    LabeledContent("Eligible Load Volume", value: "\(volume) kg·reps")
+                    NytrMetricRow("Eligible Load Volume", value: "\(displayUnit.display(volume, volume: true))")
                 }
             }
 
             detailContent
         }
         #if os(iOS)
-        .listStyle(.insetGrouped)
+            .listStyle(.insetGrouped)
         #endif
+        .nytrList()
         .navigationTitle(session.title)
+        .toolbar { ToolbarItem(placement: .primaryAction) { TrainingUnitPicker() } }
         .task(id: "\(subject):\(session.revisionId)") {
             await viewModel.loadSessionDetail(revisionId: session.revisionId)
         }
@@ -201,7 +224,7 @@ struct SessionDetailView: View {
         case .error(let revisionId, let message):
             if revisionId == session.revisionId {
                 Section {
-                    Text(message).foregroundStyle(.orange)
+                    NytrStatusLabel(title: message, systemImage: "exclamationmark.triangle")
                     Button("Try Again") {
                         Task { await viewModel.loadSessionDetail(revisionId: session.revisionId) }
                     }
@@ -251,6 +274,8 @@ struct SessionDetailView: View {
 }
 
 private struct DetailedTrainingSetRow: View {
+    @AppStorage(TrainingWeightUnit.preferenceKey) private var weightUnit = "lb"
+    private var displayUnit: TrainingWeightUnit { TrainingWeightUnit(rawValue: weightUnit) ?? .lb }
     let trainingSet: DetailedTrainingSetDTO
 
     var body: some View {
@@ -268,12 +293,12 @@ private struct DetailedTrainingSetRow: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
                 if let reps = trainingSet.reps {
                     Text("\(reps) reps")
                 }
                 if let load = trainingSet.load {
-                    Text("\(load.value) \(load.unit)")
+                    Text("\(displayUnit.display(load.value, sourceUnit: load.unit))")
                 }
                 if let distance = trainingSet.distance {
                     Text("\(distance.value) \(distance.unit)")
@@ -296,6 +321,8 @@ private struct DetailedTrainingSetRow: View {
 // MARK: - Exercise Occurrence within a Session
 
 private struct ExerciseOccurrenceView: View {
+    @AppStorage(TrainingWeightUnit.preferenceKey) private var weightUnit = "lb"
+    private var displayUnit: TrainingWeightUnit { TrainingWeightUnit(rawValue: weightUnit) ?? .lb }
     let exercise: ExerciseOccurrenceAnalyticsDTO
 
     var body: some View {
@@ -341,7 +368,7 @@ private struct ExerciseOccurrenceView: View {
             Image(systemName: "trophy.fill")
                 .font(.caption2)
                 .foregroundStyle(.yellow)
-            Text("Top: \(topSet.loadKg) kg × \(topSet.reps) reps")
+            Text("Top: \(displayUnit.display(topSet.loadKg)) × \(topSet.reps) reps")
                 .font(.caption)
             if let rpe = topSet.rpe {
                 Text("@ RPE \(rpe)")
@@ -363,7 +390,7 @@ private struct ExerciseOccurrenceView: View {
                     .foregroundStyle(.secondary)
             }
             if let volume = exercise.volumeKgReps {
-                Text("\(volume) kg·reps")
+                Text("\(displayUnit.display(volume, volume: true))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -403,6 +430,8 @@ private struct ExerciseOccurrenceView: View {
 // MARK: - Exercise History
 
 struct ExerciseHistoryView: View {
+    @AppStorage(TrainingWeightUnit.preferenceKey) private var weightUnit = "lb"
+    private var displayUnit: TrainingWeightUnit { TrainingWeightUnit(rawValue: weightUnit) ?? .lb }
     let viewModel: TrainingViewModel
     let sourceExerciseId: String
     let sourceSystem: String
@@ -416,7 +445,7 @@ struct ExerciseHistoryView: View {
                 ProgressView("Loading exercise history…")
             case .error(let message):
                 Section {
-                    Text(message).foregroundStyle(.orange)
+                    NytrStatusLabel(title: message, systemImage: "exclamationmark.triangle")
                     Button("Try Again") {
                         Task {
                             await viewModel.loadExerciseHistory(
@@ -436,7 +465,7 @@ struct ExerciseHistoryView: View {
                 frequencySection(response.frequency)
                 completenessSection(response.completeness)
 
-                Section("Sessions") {
+                Section("Recorded sessions") {
                     ForEach(response.history) { point in
                         historyPointRow(point)
                     }
@@ -444,9 +473,11 @@ struct ExerciseHistoryView: View {
             }
         }
         #if os(iOS)
-        .listStyle(.insetGrouped)
+            .listStyle(.insetGrouped)
         #endif
+        .nytrList()
         .navigationTitle(displayName)
+        .toolbar { ToolbarItem(placement: .primaryAction) { TrainingUnitPicker() } }
         .task(id: "\(subject):\(sourceExerciseId)") {
             await viewModel.loadExerciseHistory(
                 sourceExerciseId: sourceExerciseId,
@@ -457,7 +488,7 @@ struct ExerciseHistoryView: View {
 
     @ViewBuilder
     private func coachingSection(_ coaching: ExerciseCoachingGuidanceDTO) -> some View {
-        Section("Next Session Guidance") {
+        Section("Nytr coaching · next session") {
             Label {
                 Text(coachingStatusLabel(coaching.status))
             } icon: {
@@ -466,9 +497,14 @@ struct ExerciseHistoryView: View {
             .foregroundStyle(coaching.status == "progress" ? .green : .secondary)
 
             Text(coachingInstruction(coaching))
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(NytrDesign.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
+                .font(.title3.weight(.semibold))
+                .fixedSize(horizontal: false, vertical: true)
 
             if let target = coaching.target {
-                LabeledContent("Working Sets", value: String(target.workingSetCount))
+                NytrMetricRow("Working Sets", value: String(target.workingSetCount))
             }
 
             Text(
@@ -488,7 +524,7 @@ struct ExerciseHistoryView: View {
             guard let load = target.topLoadKg, let reps = target.topSetReps else {
                 return "Guidance is unavailable because its exact target is incomplete."
             }
-            return "Keep the top-set load at \(load) kg and aim for \(reps) reps."
+            return "Keep the top-set load at \(displayUnit.display(load)) and aim for \(reps) reps."
         case "add_one_total_rep_bodyweight":
             guard let reps = target.totalReps else {
                 return "Guidance is unavailable because its exact target is incomplete."
@@ -498,12 +534,13 @@ struct ExerciseHistoryView: View {
             guard let reps = target.totalReps else {
                 return "Guidance is unavailable because its exact target is incomplete."
             }
-            return "Keep every assistance setting unchanged and aim for \(reps) total reps across the same working sets."
+            return
+                "Keep every assistance setting unchanged and aim for \(reps) total reps across the same working sets."
         case "repeat_latest_top_set":
             guard let load = target.topLoadKg, let reps = target.topSetReps else {
                 return "Hold the latest performance; its exact target is incomplete."
             }
-            return "Hold: repeat the latest top set at \(load) kg for \(reps) reps."
+            return "Hold: repeat the latest top set at \(displayUnit.display(load)) for \(reps) reps."
         case "repeat_latest_rep_total":
             guard let reps = target.totalReps else {
                 return "Hold the latest performance; its exact target is incomplete."
@@ -513,33 +550,33 @@ struct ExerciseHistoryView: View {
             }
             return "Hold: repeat \(reps) total bodyweight reps across the same working sets."
         default:
-            return "Guidance is unavailable because the policy action is unsupported."
+            return "Guidance is not available for this performance."
         }
     }
 
     private func unavailableCoachingMessage(_ reason: String?) -> String {
         switch reason {
         case "history_incomplete":
-            return "Guidance needs a complete bounded Hevy history read. Existing training facts are unchanged."
+            return "Sync your Hevy history before reviewing the next session."
         case "insufficient_history":
             return "Guidance needs two comparable performances of this exact exercise."
         case "stale_latest_performance":
-            return "The latest performance is too old for this coaching policy."
+            return "A more recent performance is needed for guidance."
         case "future_evidence":
-            return "The latest performance falls after the requested local date."
+            return "The latest workout is dated in the future. Check its date in Hevy."
         case "assistance_configuration_changed":
             return "Assistance changed between sessions, so Nytr will not infer a progression target."
         case "working_set_structure_changed", "repeated_exercise_occurrence", "metric_family_changed":
-            return "The two performances are not structurally comparable."
+            return "The exercise or working sets changed, so these sessions cannot be compared."
         case "unsupported_metric_family":
             return "This exercise type does not support progressive-overload guidance."
         case "incomplete_metrics", "unsupported_sets_present", "source_evidence_unavailable",
-             "assistance_configuration_incomplete", "top_set_unavailable", "rep_total_unavailable":
-            return "The recorded evidence is incomplete for deterministic guidance."
+            "assistance_configuration_incomplete", "top_set_unavailable", "rep_total_unavailable":
+            return "Some workout details needed for guidance are missing."
         case "rep_target_out_of_bounds":
-            return "The recorded rep target is outside this policy's safe bounds."
+            return "The rep target is outside the supported range for guidance."
         default:
-            return "Deterministic guidance is unavailable for this performance."
+            return "Guidance is not available for this performance."
         }
     }
 
@@ -562,22 +599,22 @@ struct ExerciseHistoryView: View {
     @ViewBuilder
     private func comparisonSection(_ response: ExerciseTrainingHistoryResponse) -> some View {
         let comparison = response.comparison
-        Section("Latest vs Previous") {
+        Section("Hevy history · latest vs previous") {
             if comparison.previousRevisionId == nil {
                 Text("No previous session for comparison.")
                     .foregroundStyle(.secondary)
             } else {
                 if let loadDelta = comparison.topLoadDeltaKg {
-                    LabeledContent("Top Load Change", value: deltaString(loadDelta, unit: "kg"))
+                    NytrMetricRow("Top Load Change", value: deltaLoad(loadDelta))
                 }
                 if let repDelta = comparison.repsAtSameTopLoadDelta {
-                    LabeledContent("Reps at Same Load", value: deltaInt(repDelta))
+                    NytrMetricRow("Reps at Same Load", value: deltaInt(repDelta))
                 }
                 if let volumeDelta = comparison.volumeDeltaKgReps {
-                    LabeledContent("Volume Change", value: deltaString(volumeDelta, unit: "kg·reps"))
+                    NytrMetricRow("Volume Change", value: deltaLoad(volumeDelta, volume: true))
                 }
                 if let setDelta = comparison.workingSetCountDelta {
-                    LabeledContent("Working Sets", value: deltaInt(setDelta))
+                    NytrMetricRow("Working Sets", value: deltaInt(setDelta))
                 }
             }
         }
@@ -610,10 +647,14 @@ struct ExerciseHistoryView: View {
     @ViewBuilder
     private func frequencySection(_ frequency: ExerciseFrequencyDTO) -> some View {
         Section("Frequency") {
-            LabeledContent("Last 7 Days", value: "\(frequency.sessionsLast7Days) session\(frequency.sessionsLast7Days == 1 ? "" : "s")")
-            LabeledContent("Last 28 Days", value: "\(frequency.sessionsLast28Days) session\(frequency.sessionsLast28Days == 1 ? "" : "s")")
+            NytrMetricRow(
+                "Last 7 Days",
+                value: "\(frequency.sessionsLast7Days) session\(frequency.sessionsLast7Days == 1 ? "" : "s")")
+            NytrMetricRow(
+                "Last 28 Days",
+                value: "\(frequency.sessionsLast28Days) session\(frequency.sessionsLast28Days == 1 ? "" : "s")")
             if let days = frequency.daysSinceLastPerformance {
-                LabeledContent("Days Since Last", value: String(days))
+                NytrMetricRow("Days Since Last", value: String(days))
             }
         }
     }
@@ -630,10 +671,9 @@ struct ExerciseHistoryView: View {
     @ViewBuilder
     private func historyPointRow(_ point: ExerciseHistoryPointDTO) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(point.sessionTitle)
                     .font(.subheadline)
-                Spacer()
                 Text(Self.formatDate(point.startedAt))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -649,12 +689,12 @@ struct ExerciseHistoryView: View {
                 }
             }
             if let topSet = point.topLoadSet {
-                Text("Top: \(topSet.loadKg) kg × \(topSet.reps)")
+                Text("Top: \(displayUnit.display(topSet.loadKg)) × \(topSet.reps)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             if let volume = point.volumeKgReps {
-                Text("Volume: \(volume) kg·reps")
+                Text("Volume: \(displayUnit.display(volume, volume: true))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -664,6 +704,10 @@ struct ExerciseHistoryView: View {
     }
 
     // MARK: - Helpers
+
+    private func deltaLoad(_ value: String, volume: Bool = false) -> String {
+        (value.hasPrefix("-") ? "" : "+") + displayUnit.display(value, volume: volume)
+    }
 
     private func deltaString(_ value: String, unit: String) -> String {
         if value.hasPrefix("-") {
@@ -691,7 +735,7 @@ struct ExerciseHistoryView: View {
     private func prValueText(_ pr: TrainingPREvidenceDTO) -> some View {
         HStack(spacing: 8) {
             if let load = pr.loadKg {
-                Text("\(load) kg")
+                Text("\(displayUnit.display(load))")
                     .font(.caption)
             }
             if let reps = pr.reps {
@@ -699,7 +743,7 @@ struct ExerciseHistoryView: View {
                     .font(.caption)
             }
             if let volume = pr.volumeKgReps {
-                Text("\(volume) kg·reps")
+                Text("\(displayUnit.display(volume, volume: true))")
                     .font(.caption)
             }
         }
@@ -708,7 +752,7 @@ struct ExerciseHistoryView: View {
     private func prScopeLabel(_ scope: String) -> String {
         switch scope {
         case "within_synced_hevy_history": return "Within synced Hevy history"
-        case "within_bounded_synced_hevy_history": return "Within bounded synced Hevy history"
+        case "within_bounded_synced_hevy_history": return "Within the Hevy history synced to Nytr"
         default: return scope
         }
     }
@@ -724,6 +768,8 @@ struct ExerciseHistoryView: View {
 // MARK: - Exercise Index
 
 struct ExerciseIndexView: View {
+    @AppStorage(TrainingWeightUnit.preferenceKey) private var weightUnit = "lb"
+    private var displayUnit: TrainingWeightUnit { TrainingWeightUnit(rawValue: weightUnit) ?? .lb }
     let viewModel: TrainingViewModel
     let subject: String
 
@@ -734,7 +780,7 @@ struct ExerciseIndexView: View {
                 ProgressView("Loading exercise index…")
             case .error(let message):
                 Section {
-                    Text(message).foregroundStyle(.orange)
+                    NytrStatusLabel(title: message, systemImage: "exclamationmark.triangle")
                     Button("Try Again") { Task { await viewModel.refreshExerciseIndex() } }
                 }
             case .signedOut:
@@ -768,7 +814,7 @@ struct ExerciseIndexView: View {
             }
         }
         #if os(iOS)
-        .listStyle(.insetGrouped)
+            .listStyle(.insetGrouped)
         #endif
         .navigationTitle("All Exercises")
         .refreshable { await viewModel.refreshExerciseIndex() }
@@ -792,7 +838,7 @@ struct ExerciseIndexView: View {
                     .clipShape(Capsule())
             }
             if let topSet = entry.latestTopLoadSet {
-                Text("Latest top: \(topSet.loadKg) kg × \(topSet.reps) reps")
+                Text("Latest top: \(displayUnit.display(topSet.loadKg)) × \(topSet.reps) reps")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

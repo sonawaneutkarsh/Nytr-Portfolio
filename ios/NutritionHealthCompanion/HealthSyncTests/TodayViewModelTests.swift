@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import NutritionHealthCompanion
 
 @MainActor
@@ -17,6 +18,8 @@ final class TodayViewModelTests: XCTestCase {
         var nextMealConsumptionWrites: [Result<NextMealConsumptionResponse, Error>] = []
         var blockNextPlan = false
         var blockNextTrend = false
+        var blockNextLedger = false
+        private var blockedLedgerContinuation: CheckedContinuation<Void, Never>?
         var blockNextGeneration = false
         var blockNextMealGeneration = false
         private var blockedContinuation: CheckedContinuation<Void, Never>?
@@ -35,6 +38,7 @@ final class TodayViewModelTests: XCTestCase {
         private(set) var trendCalls: [(Date, String)] = []
         private(set) var ledgerCalls: [(Date, String)] = []
         private(set) var nextMealGenerationCalls: [(Date, String, UUID)] = []
+        private(set) var latestNextMealCalls = 0
         private(set) var nextMealConsumptionReadIds: [UUID] = []
         private(set) var nextMealConsumptionWriteCalls: [(UUID, UUID)] = []
 
@@ -76,16 +80,34 @@ final class TodayViewModelTests: XCTestCase {
         func fetchDailyNutritionLedger(date: Date, timezone: String) async throws
             -> DailyNutritionLedgerResponse
         {
-            let result = lock.withLock {
+            let (result, block) = lock.withLock {
                 ledgerCalls.append((date, timezone))
-                return ledgers.isEmpty ? .success(Self.emptyLedger) : ledgers.removeFirst()
+                let result: Result<DailyNutritionLedgerResponse, Error> =
+                    ledgers.isEmpty ? .success(Self.emptyLedger) : ledgers.removeFirst()
+                let block = blockNextLedger
+                blockNextLedger = false
+                return (result, block)
+            }
+            if block {
+                await withCheckedContinuation { waiting in lock.withLock { blockedLedgerContinuation = waiting } }
             }
             return try result.get()
         }
 
+        var ledgerIsBlocked: Bool { lock.withLock { blockedLedgerContinuation != nil } }
+        func releaseLedger() {
+            let waiting = lock.withLock {
+                let waiting = blockedLedgerContinuation
+                blockedLedgerContinuation = nil
+                return waiting
+            }
+            waiting?.resume()
+        }
+
         func fetchLatestNextMeal() async throws -> NextMealRecommendationResponse {
             let result = lock.withLock {
-                nextMeals.isEmpty
+                latestNextMealCalls += 1
+                return nextMeals.isEmpty
                     ? .failure(BackendError.rejected(statusCode: 404, code: "next_meal_not_found", detail: nil))
                     : nextMeals.removeFirst()
             }
@@ -126,11 +148,12 @@ final class TodayViewModelTests: XCTestCase {
             let result = lock.withLock {
                 nextMealConsumptionReadIds.append(recommendationId)
                 return nextMealConsumptionReads.isEmpty
-                    ? .failure(BackendError.rejected(
-                        statusCode: 404,
-                        code: "next_meal_consumption_not_found",
-                        detail: nil
-                    ))
+                    ? .failure(
+                        BackendError.rejected(
+                            statusCode: 404,
+                            code: "next_meal_consumption_not_found",
+                            detail: nil
+                        ))
                     : nextMealConsumptionReads.removeFirst()
             }
             return try result.get()
@@ -191,6 +214,8 @@ final class TodayViewModelTests: XCTestCase {
             continuation?.resume()
         }
 
+        var planIsBlocked: Bool { lock.withLock { blockedContinuation != nil } }
+
         func releaseTrendFetch() {
             lock.lock()
             let continuation = blockedTrendContinuation
@@ -241,7 +266,8 @@ final class TodayViewModelTests: XCTestCase {
         }
 
         func listConsumption(runId: UUID) async throws -> ConsumptionListResponse {
-            lock.lock(); defer { lock.unlock() }
+            lock.lock()
+            defer { lock.unlock() }
             listRunIds.append(runId)
             if consumptionLists.isEmpty { return ConsumptionListResponse(entries: []) }
             return try consumptionLists.removeFirst().get()
@@ -254,23 +280,24 @@ final class TodayViewModelTests: XCTestCase {
             state: ConsumptionState,
             clientEventId: UUID?
         ) async throws -> ConsumptionEntryResponse {
-            lock.lock(); defer { lock.unlock() }
+            lock.lock()
+            defer { lock.unlock() }
             writes.append((runId, planVersionId, itemId, state, clientEventId))
             return try consumptionWrites.removeFirst().get()
         }
 
-
         private static let noDataTrend = try! JSONDecoder().decode(
             BodyMassTrendResponse.self,
-            from: Data("""
-            {"status":"no_data","as_of_date":"2026-08-21","timezone":"America/New_York",
-             "algorithm_version":"body-mass-trend-v1",
-             "input_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-             "represented_day_count":0,"coverage_span_days":0,
-             "first_measurement_date":null,"last_measurement_date":null,
-             "latest_measurement_date":null,"latest_measurement_age_days":null,
-             "trailing_7d_average_kg":null,"weekly_rate_kg":null}
-            """.utf8)
+            from: Data(
+                """
+                {"status":"no_data","as_of_date":"2026-08-21","timezone":"America/New_York",
+                 "algorithm_version":"body-mass-trend-v1",
+                 "input_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                 "represented_day_count":0,"coverage_span_days":0,
+                 "first_measurement_date":null,"last_measurement_date":null,
+                 "latest_measurement_date":null,"latest_measurement_age_days":null,
+                 "trailing_7d_average_kg":null,"weekly_rate_kg":null}
+                """.utf8)
         )
 
         private static let emptyLedger = DailyNutritionLedgerResponse(
@@ -324,7 +351,10 @@ final class TodayViewModelTests: XCTestCase {
         cache: MemoryCache = MemoryCache(),
         eventIds: [UUID]? = nil,
         unauthorized: @escaping @MainActor () -> Void = {},
-        consumptionRecorded: @escaping @MainActor () async -> Void = {}
+        consumptionRecorded: @escaping @MainActor () async -> Void = {},
+        planStateChanged: @escaping @MainActor (
+            CompletedDayPlan?, [UUID: [ConsumptionEntryResponse]], String
+        ) async -> Void = { _, _, _ in }
     ) -> TodayViewModel {
         var ids = eventIds ?? [eventId]
         return TodayViewModel(
@@ -334,7 +364,8 @@ final class TodayViewModelTests: XCTestCase {
             timezoneIdentifier: { "America/New_York" },
             eventId: { ids.removeFirst() },
             onUnauthorized: unauthorized,
-            onNextMealConsumptionRecorded: consumptionRecorded
+            onNextMealConsumptionRecorded: consumptionRecorded,
+            onPlanStateChanged: planStateChanged
         )
     }
 
@@ -353,6 +384,25 @@ final class TodayViewModelTests: XCTestCase {
         XCTAssertEqual(backend.listRunIds, [runId])
         XCTAssertEqual(viewModel.latestConsumption(for: itemId)?.state, .eaten)
         XCTAssertEqual(plan.targetPolicy?.policyVersion, "historical-p1")
+    }
+
+    func test_consumptionReadFailurePublishesNoPlanForNotificationScheduling() async {
+        let backend = ScriptedBackend()
+        let plan = completed(policy: "historical-p1")
+        backend.plans = [.success(.completed(plan))]
+        backend.consumptionLists = [.failure(BackendError.retryable("offline"))]
+        var publishedPlans: [CompletedDayPlan?] = []
+        let viewModel = makeViewModel(
+            backend: backend,
+            planStateChanged: { plan, _, _ in publishedPlans.append(plan) }
+        )
+
+        await viewModel.activate(subject: subject)
+
+        XCTAssertFalse(viewModel.isPlanConsumptionStatusResolved)
+        XCTAssertEqual(publishedPlans.count, 1)
+        XCTAssertNil(publishedPlans[0])
+        XCTAssertEqual(viewModel.consumptionMessage, "Consumption history is temporarily unavailable.")
     }
 
     func testNextMealIsExplicitAndReusesLogicalRequestIdAfterAmbiguousFailure() async {
@@ -394,8 +444,9 @@ final class TodayViewModelTests: XCTestCase {
         let nextId = UUID(uuidString: "60000000-0000-0000-0000-000000000002")!
         backend.plans = [.success(.notGenerated(NotGeneratedDay(requestedDate: "2026-08-21")))]
         backend.nextMealGenerations = [
-            .failure(BackendError.rejected(
-                statusCode: 409, code: "next_meal_request_conflict", detail: nil)),
+            .failure(
+                BackendError.rejected(
+                    statusCode: 409, code: "next_meal_request_conflict", detail: nil)),
             .success(Self.nextMealFailure),
         ]
         let viewModel = makeViewModel(backend: backend, eventIds: [eventId, nextId])
@@ -664,6 +715,48 @@ final class TodayViewModelTests: XCTestCase {
         XCTAssertEqual(backend.generationCalls.count, 0)
     }
 
+    func testRepeatedActivationForSameOwnerDoesNotDuplicateScreenRequests() async {
+        let backend = ScriptedBackend()
+        backend.plans = [
+            .success(.notGenerated(NotGeneratedDay(requestedDate: "2026-08-21")))
+        ]
+        let viewModel = makeViewModel(backend: backend)
+        await viewModel.activate(subject: subject)
+        await viewModel.activate(subject: subject)
+        XCTAssertEqual(backend.fetchDates.count, 1)
+        XCTAssertEqual(backend.trendCalls.count, 1)
+        XCTAssertEqual(backend.ledgerCalls.count, 1)
+        XCTAssertEqual(backend.latestNextMealCalls, 1)
+    }
+
+    func testColdActivationStartsIndependentReadsBeforePlanCompletes() async {
+        let backend = ScriptedBackend()
+        backend.plans = [
+            .success(.notGenerated(NotGeneratedDay(requestedDate: "2026-08-21")))
+        ]
+        backend.blockNextPlan = true
+        let viewModel = makeViewModel(backend: backend)
+
+        let activation = Task { await viewModel.activate(subject: subject) }
+        for _ in 0..<1_000 {
+            if backend.planIsBlocked,
+                backend.trendCalls.count == 1,
+                backend.ledgerCalls.count == 1,
+                backend.latestNextMealCalls == 1
+            {
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+
+        XCTAssertTrue(backend.planIsBlocked)
+        XCTAssertEqual(backend.trendCalls.count, 1)
+        XCTAssertEqual(backend.ledgerCalls.count, 1)
+        XCTAssertEqual(backend.latestNextMealCalls, 1)
+        backend.releasePlanFetch()
+        await activation.value
+    }
+
     func test_explicitGeneratePostsThenFetchesCanonicalGet() async {
         let backend = ScriptedBackend()
         let plan = completed()
@@ -689,8 +782,11 @@ final class TodayViewModelTests: XCTestCase {
             .success(.notGenerated(NotGeneratedDay(requestedDate: "2026-08-21"))),
             .success(.completed(plan)),
         ]
-        backend.generations = [.failure(BackendError.rejected(
-            statusCode: 409, code: "concurrent_generation", detail: nil))]
+        backend.generations = [
+            .failure(
+                BackendError.rejected(
+                    statusCode: 409, code: "concurrent_generation", detail: nil))
+        ]
         let viewModel = makeViewModel(backend: backend)
         await viewModel.activate(subject: subject)
         await viewModel.generate()
@@ -823,14 +919,15 @@ final class TodayViewModelTests: XCTestCase {
         backend.generations = [.success(.completed(newPlan))]
         backend.consumptionWrites = [
             .success(entry()),
-            .success(entry(
-                entryIdentifier: UUID(
-                    uuidString: "70000000-0000-0000-0000-000000000002")!,
-                runIdentifier: newRunId,
-                versionIdentifier: newVersionId,
-                itemIdentifier: newItemId,
-                clientEventIdentifier: newEventId
-            )),
+            .success(
+                entry(
+                    entryIdentifier: UUID(
+                        uuidString: "70000000-0000-0000-0000-000000000002")!,
+                    runIdentifier: newRunId,
+                    versionIdentifier: newVersionId,
+                    itemIdentifier: newItemId,
+                    clientEventIdentifier: newEventId
+                )),
         ]
         let viewModel = makeViewModel(
             backend: backend,
@@ -856,8 +953,11 @@ final class TodayViewModelTests: XCTestCase {
     func test_noApprovedPolicyHasSpecificState() async {
         let backend = ScriptedBackend()
         backend.plans = [.success(.notGenerated(NotGeneratedDay(requestedDate: "2026-08-21")))]
-        backend.generations = [.failure(BackendError.rejected(
-            statusCode: 409, code: "no_approved_target_policy", detail: nil))]
+        backend.generations = [
+            .failure(
+                BackendError.rejected(
+                    statusCode: 409, code: "no_approved_target_policy", detail: nil))
+        ]
         let viewModel = makeViewModel(backend: backend)
         await viewModel.activate(subject: subject)
         await viewModel.generate()
@@ -867,11 +967,14 @@ final class TodayViewModelTests: XCTestCase {
     func test_menuDataUnavailableHasSpecificStateWithoutCanonicalFetch() async {
         let backend = ScriptedBackend()
         backend.plans = [.success(.notGenerated(NotGeneratedDay(requestedDate: "2026-08-21")))]
-        backend.generations = [.failure(BackendError.retryableHTTP(
-            statusCode: 503,
-            code: "menu_data_unavailable",
-            detail: "retry later"
-        ))]
+        backend.generations = [
+            .failure(
+                BackendError.retryableHTTP(
+                    statusCode: 503,
+                    code: "menu_data_unavailable",
+                    detail: "retry later"
+                ))
+        ]
         let viewModel = makeViewModel(backend: backend)
         await viewModel.activate(subject: subject)
 
@@ -885,11 +988,14 @@ final class TodayViewModelTests: XCTestCase {
     func test_otherGenerationFailuresRemainGenericAndAreNotMisreportedAsMenuFailures() async {
         let backend = ScriptedBackend()
         backend.plans = [.success(.notGenerated(NotGeneratedDay(requestedDate: "2026-08-21")))]
-        backend.generations = [.failure(BackendError.retryableHTTP(
-            statusCode: 503,
-            code: "storage_unavailable",
-            detail: "retry later"
-        ))]
+        backend.generations = [
+            .failure(
+                BackendError.retryableHTTP(
+                    statusCode: 503,
+                    code: "storage_unavailable",
+                    detail: "retry later"
+                ))
+        ]
         let viewModel = makeViewModel(backend: backend)
         await viewModel.activate(subject: subject)
 
@@ -1058,6 +1164,51 @@ final class TodayViewModelTests: XCTestCase {
         XCTAssertEqual(backend.trendCalls[0].0, today)
         XCTAssertEqual(backend.trendCalls[0].1, "America/New_York")
         XCTAssertNil(ready.formattedTrailingAverageKg)
+    }
+
+    func testLedgerRetryRefetchesAndRecoversIndependently() async {
+        let backend = ScriptedBackend()
+        backend.plans = [.success(.notGenerated(NotGeneratedDay(requestedDate: "2026-08-21")))]
+        let healthy = ledger(consumed: "120", count: 1)
+        backend.ledgers = [.failure(BackendError.retryable("temporary")), .success(healthy)]
+        let vm = makeViewModel(backend: backend)
+        await vm.activate(subject: "owner")
+        guard case .error = vm.ledgerPhase else { return XCTFail("Expected initial failure") }
+        await vm.retryLedger()
+        XCTAssertEqual(vm.ledgerPhase, .result(healthy))
+        XCTAssertEqual(backend.ledgerCalls.count, 2)
+    }
+
+    func testLateLedgerRetryCannotOverwriteNewerTotalsOrSignOut() async {
+        let backend = ScriptedBackend()
+        backend.plans = [.success(.notGenerated(NotGeneratedDay(requestedDate: "2026-08-21")))]
+        let latest = ledger(consumed: "450", count: 2)
+        let vm = makeViewModel(backend: backend)
+        await vm.activate(subject: "owner")
+        backend.ledgers = [.failure(BackendError.unauthorized), .success(latest)]
+        backend.blockNextLedger = true
+        let old = Task { await vm.retryLedger() }
+        for _ in 0..<1000 {
+            if backend.ledgerIsBlocked { break }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        XCTAssertTrue(backend.ledgerIsBlocked)
+        await vm.retryLedger()
+        backend.releaseLedger()
+        await old.value
+        XCTAssertEqual(vm.ledgerPhase, .result(latest))
+        backend.ledgers = [.success(latest)]
+        backend.blockNextLedger = true
+        let pending = Task { await vm.retryLedger() }
+        for _ in 0..<1000 {
+            if backend.ledgerIsBlocked { break }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        XCTAssertTrue(backend.ledgerIsBlocked)
+        vm.resetForSignOut()
+        backend.releaseLedger()
+        await pending.value
+        XCTAssertEqual(vm.ledgerPhase, .signedOut)
     }
 
     func test_ledgerUsesInjectedTodayAndRefreshesOnlyAfterDurableEatenSuccess() async {
@@ -1275,15 +1426,16 @@ final class TodayViewModelTests: XCTestCase {
         let rateJSON = rate.map { "\"\($0)\"" } ?? "null"
         return try! JSONDecoder().decode(
             BodyMassTrendResponse.self,
-            from: Data("""
-            {"status":"\(status)","as_of_date":"2026-08-21",
-             "timezone":"America/New_York","algorithm_version":"body-mass-trend-v1",
-             "input_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-             "represented_day_count":7,"coverage_span_days":20,
-             "first_measurement_date":"2026-08-01","last_measurement_date":"2026-08-21",
-             "latest_measurement_date":"2026-08-21","latest_measurement_age_days":0,
-             "trailing_7d_average_kg":\(averageJSON),"weekly_rate_kg":\(rateJSON)}
-            """.utf8)
+            from: Data(
+                """
+                {"status":"\(status)","as_of_date":"2026-08-21",
+                 "timezone":"America/New_York","algorithm_version":"body-mass-trend-v1",
+                 "input_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                 "represented_day_count":7,"coverage_span_days":20,
+                 "first_measurement_date":"2026-08-01","last_measurement_date":"2026-08-21",
+                 "latest_measurement_date":"2026-08-21","latest_measurement_age_days":0,
+                 "trailing_7d_average_kg":\(averageJSON),"weekly_rate_kg":\(rateJSON)}
+                """.utf8)
         )
     }
 
@@ -1301,17 +1453,19 @@ final class TodayViewModelTests: XCTestCase {
             categoryNames: ["Entree"],
             configurableEstimate: nil,
             dietaryTags: [],
-            lines: [PlanLine(
-                categoryName: "Entree",
-                foodId: UUID(uuidString: "30000000-0000-0000-0000-000000000001")!,
-                nameNormalized: "Example meal",
-                occurrenceOrdinal: 0,
-                offeringId: UUID(uuidString: "40000000-0000-0000-0000-000000000001")!,
-                parserVersion: "parser.v1",
-                profileContentSha256: "profile-sha",
-                servings: "1.250",
-                sourceMid: "mid-1"
-            )],
+            lines: [
+                PlanLine(
+                    categoryName: "Entree",
+                    foodId: UUID(uuidString: "30000000-0000-0000-0000-000000000001")!,
+                    nameNormalized: "Example meal",
+                    occurrenceOrdinal: 0,
+                    offeringId: UUID(uuidString: "40000000-0000-0000-0000-000000000001")!,
+                    parserVersion: "parser.v1",
+                    profileContentSha256: "profile-sha",
+                    servings: "1.250",
+                    sourceMid: "mid-1"
+                )
+            ],
             provenance: PlanProvenance(
                 offeringIds: [], foodIds: [], profileContentSha256s: []),
             score: PlanScore(breakdown: [:], total: "-0.125"),
@@ -1336,15 +1490,19 @@ final class TodayViewModelTests: XCTestCase {
                     engine: "engine.v1", planner: "planner.v1",
                     schedule: "schedule.v1", target: "target.v1"),
                 menuSnapshotSha256: "menu-sha",
-                slots: [PlanSlot(
-                    context: "lunch", menuPeriod: "Lunch", status: "ok",
-                    window: ["12:00:00", "13:00:00"], failureReasons: [],
-                    rejectionCounts: [:], rejectionDetails: [], candidates: [candidate])],
+                slots: [
+                    PlanSlot(
+                        context: "lunch", menuPeriod: "Lunch", status: "ok",
+                        window: ["12:00:00", "13:00:00"], failureReasons: [],
+                        rejectionCounts: [:], rejectionDetails: [], candidates: [candidate])
+                ],
                 status: "ok"
             ),
-            planItems: [PlanItemReference(
-                itemId: itemIdentifier ?? itemId, slotIndex: 0, rank: 1,
-                candidateId: candidate.candidateId)],
+            planItems: [
+                PlanItemReference(
+                    itemId: itemIdentifier ?? itemId, slotIndex: 0, rank: 1,
+                    candidateId: candidate.candidateId)
+            ],
             targetPolicy: TargetPolicyUsed(
                 versionId: UUID(uuidString: "90000000-0000-0000-0000-000000000001")!,
                 policyVersion: policy,
@@ -1368,10 +1526,12 @@ final class TodayViewModelTests: XCTestCase {
                 planDate: base.plan.planDate,
                 policyVersions: base.plan.policyVersions,
                 menuSnapshotSha256: base.plan.menuSnapshotSha256,
-                slots: [PlanSlot(
-                    context: "lunch", menuPeriod: "Lunch", status: "ok",
-                    window: ["12:00:00", "13:00:00"], failureReasons: [],
-                    rejectionCounts: [:], rejectionDetails: [], candidates: candidates)],
+                slots: [
+                    PlanSlot(
+                        context: "lunch", menuPeriod: "Lunch", status: "ok",
+                        window: ["12:00:00", "13:00:00"], failureReasons: [],
+                        rejectionCounts: [:], rejectionDetails: [], candidates: candidates)
+                ],
                 status: base.plan.status
             ),
             planItems: candidates.enumerated().map { index, candidate in
@@ -1392,12 +1552,14 @@ final class TodayViewModelTests: XCTestCase {
         let lines = names.enumerated().map { index, name in
             PlanLine(
                 categoryName: "Entree",
-                foodId: UUID(uuidString: String(
-                    format: "30000000-0000-0000-0000-%012d", rank * 10 + index + 1))!,
+                foodId: UUID(
+                    uuidString: String(
+                        format: "30000000-0000-0000-0000-%012d", rank * 10 + index + 1))!,
                 nameNormalized: name,
                 occurrenceOrdinal: index,
-                offeringId: UUID(uuidString: String(
-                    format: "40000000-0000-0000-0000-%012d", rank * 10 + index + 1))!,
+                offeringId: UUID(
+                    uuidString: String(
+                        format: "40000000-0000-0000-0000-%012d", rank * 10 + index + 1))!,
                 parserVersion: "parser.v1",
                 profileContentSha256: "profile-sha-\(rank)-\(index)",
                 servings: "1",

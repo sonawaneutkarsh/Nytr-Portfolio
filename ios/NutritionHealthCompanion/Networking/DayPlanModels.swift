@@ -630,6 +630,20 @@ enum WireDay {
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: date)
     }
+
+    /// Normalize an instant to its calendar day in the supplied owner timezone,
+    /// then represent that day as UTC midnight for the existing wire formatter.
+    static func localRequestDate(
+        from instant: Date = Date(),
+        timeZone: TimeZone = .current
+    ) -> Date {
+        var localCalendar = Calendar(identifier: .gregorian)
+        localCalendar.timeZone = timeZone
+        let components = localCalendar.dateComponents([.year, .month, .day], from: instant)
+        var wireCalendar = Calendar(identifier: .gregorian)
+        wireCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return wireCalendar.date(from: components) ?? instant
+    }
 }
 
 enum DailyNutritionCompleteness: String, Codable, Equatable, Sendable {
@@ -639,6 +653,7 @@ enum DailyNutritionCompleteness: String, Codable, Equatable, Sendable {
 }
 
 enum DailyNutritionAuthority: String, Codable, Equatable, Sendable {
+    case externalReference = "external_reference"
     case userEntered = "user_entered"
     case official
     case estimated
@@ -664,7 +679,7 @@ struct DailyNutritionTarget: Codable, Equatable, Sendable {
     }
 }
 
-struct DailyConsumedNutritionItem: Codable, Equatable, Sendable {
+struct DailyConsumedNutritionItem: Codable, Equatable, Identifiable, Sendable {
     let entryId: UUID
     let recordedAt: Date
     let planRunId: UUID?
@@ -685,6 +700,10 @@ struct DailyConsumedNutritionItem: Codable, Equatable, Sendable {
     var customFoodVersionId: UUID? = nil
     var consumedAmount: String? = nil
     var consumedUnit: String? = nil
+    var servingDescription: String? = nil
+    var servingAmount: String? = nil
+    var servingUnit: String? = nil
+    var id: UUID { entryId }
 
     private enum CodingKeys: String, CodingKey {
         case entryId = "entry_id"
@@ -707,6 +726,9 @@ struct DailyConsumedNutritionItem: Codable, Equatable, Sendable {
         case customFoodVersionId = "custom_food_version_id"
         case consumedAmount = "consumed_amount"
         case consumedUnit = "consumed_unit"
+        case servingDescription = "serving_description"
+        case servingAmount = "serving_amount"
+        case servingUnit = "serving_unit"
     }
 }
 

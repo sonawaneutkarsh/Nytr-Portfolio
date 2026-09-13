@@ -14,8 +14,8 @@ from datetime import UTC, date, datetime
 from uuid import NAMESPACE_OID, UUID, uuid4, uuid5
 
 from nutrition_agent.application.ports import (
+    BodyGoalsRepository,
     BodyMassHistoryRepository,
-    BodyProfileRepository,
     ConsumptionRepository,
     CustomFoodRepository,
     DetailedTrainingAnalyticsRepository,
@@ -64,9 +64,13 @@ from nutrition_agent.application.ports import (
     TrainingSessionRepository,
     ValidatedMenuLabelObservation,
     ValidatedMenuPage,
-    WaistMeasurementRepository,
 )
-from nutrition_agent.domain.body_goals import OwnerBodyProfile, WaistMeasurement
+from nutrition_agent.domain.body_goals import (
+    BodyGoalProfileVersion,
+    StartingCalorieProposal,
+    StartingTargetDecision,
+    WaistMeasurement,
+)
 from nutrition_agent.domain.consumption import (
     ConsumptionEntry,
     ConsumptionState,
@@ -89,7 +93,10 @@ from nutrition_agent.domain.next_meal_consumption import (
     RecordNextMealConsumptionOutcome,
 )
 from nutrition_agent.domain.nutrition.custom_foods import (
+    AdjustManualFoodOutcome,
     CustomFoodVersion,
+    ManualFoodAdjustmentKind,
+    ManualFoodConsumptionAdjustment,
     ManualFoodConsumptionEntry,
     RecordManualFoodOutcome,
 )
@@ -716,32 +723,117 @@ class InMemoryHealthBodyMassRepository(HealthBodyMassRepository, BodyMassHistory
 
 
 @dataclass
-class InMemoryBodyProfileRepository(BodyProfileRepository):
-    profiles: dict[UUID, OwnerBodyProfile] = field(default_factory=dict)
+class InMemoryBodyGoalsRepository(BodyGoalsRepository):
+    target_repository: TargetPolicyRepository | None = None
+    profiles: dict[UUID, BodyGoalProfileVersion] = field(default_factory=dict)
+    waist: dict[UUID, WaistMeasurement] = field(default_factory=dict)
+    proposals: dict[UUID, StartingCalorieProposal] = field(default_factory=dict)
+    decisions: dict[UUID, StartingTargetDecision] = field(default_factory=dict)
+    _decision_events: dict[tuple[UUID, UUID], UUID] = field(default_factory=dict)
 
-    def get(self, user_id: UUID) -> OwnerBodyProfile | None:
-        return self.profiles.get(user_id)
+    def save_profile(self, profile: BodyGoalProfileVersion) -> BodyGoalProfileVersion:
+        if profile.profile_id in self.profiles:
+            raise ValueError("profile version already exists")
+        for existing in self.profiles.values():
+            if (
+                existing.user_id == profile.user_id
+                and existing.payload_sha256 == profile.payload_sha256
+            ):
+                return existing
+        self.profiles[profile.profile_id] = profile
+        return profile
 
-    def save(self, profile: OwnerBodyProfile) -> None:
-        self.profiles[profile.user_id] = profile
+    def latest_profile(self, user_id: UUID) -> BodyGoalProfileVersion | None:
+        values = [item for item in self.profiles.values() if item.user_id == user_id]
+        return max(values, key=lambda item: (item.created_at, item.profile_id)) if values else None
 
+    def save_waist(self, measurement: WaistMeasurement) -> None:
+        if measurement.measurement_id in self.waist:
+            raise ValueError("waist measurement already exists")
+        if measurement.corrects_measurement_id is not None:
+            prior = self.waist.get(measurement.corrects_measurement_id)
+            if prior is None or prior.user_id != measurement.user_id:
+                raise ValueError("invalid waist correction")
+            if any(
+                item.corrects_measurement_id == prior.measurement_id for item in self.waist.values()
+            ):
+                raise ValueError("waist measurement already corrected")
+        self.waist[measurement.measurement_id] = measurement
 
-@dataclass
-class InMemoryWaistMeasurementRepository(WaistMeasurementRepository):
-    measurements: list[WaistMeasurement] = field(default_factory=list)
-
-    def append(self, measurement: WaistMeasurement) -> None:
-        if any(item.measurement_id == measurement.measurement_id for item in self.measurements):
-            raise ValueError("waist measurement identity already exists")
-        self.measurements.append(measurement)
-
-    def list_recent(self, user_id: UUID, limit: int = 30) -> tuple[WaistMeasurement, ...]:
-        mine = sorted(
-            (item for item in self.measurements if item.user_id == user_id),
-            key=lambda item: (item.measured_at, item.measurement_id),
-            reverse=True,
+    def list_active_waist(self, user_id: UUID) -> tuple[WaistMeasurement, ...]:
+        corrected = {
+            item.corrects_measurement_id
+            for item in self.waist.values()
+            if item.corrects_measurement_id
+        }
+        return tuple(
+            sorted(
+                (
+                    item
+                    for item in self.waist.values()
+                    if item.user_id == user_id and item.measurement_id not in corrected
+                ),
+                key=lambda item: (item.measured_at, item.measurement_id),
+            )
         )
-        return tuple(mine[:limit])
+
+    def save_starting_proposal(
+        self, proposal: StartingCalorieProposal
+    ) -> tuple[StartingCalorieProposal, bool]:
+        for existing in self.proposals.values():
+            if (
+                existing.user_id == proposal.user_id
+                and existing.evidence_sha256 == proposal.evidence_sha256
+            ):
+                return existing, False
+        self.proposals[proposal.proposal_id] = proposal
+        return proposal, True
+
+    def latest_starting_proposal(self, user_id: UUID) -> StartingCalorieProposal | None:
+        values = [item for item in self.proposals.values() if item.user_id == user_id]
+        return max(values, key=lambda item: (item.created_at, item.proposal_id)) if values else None
+
+    def find_starting_proposal(
+        self, user_id: UUID, proposal_id: UUID
+    ) -> StartingCalorieProposal | None:
+        value = self.proposals.get(proposal_id)
+        return value if value is not None and value.user_id == user_id else None
+
+    def find_starting_decision(
+        self, user_id: UUID, proposal_id: UUID
+    ) -> StartingTargetDecision | None:
+        value = self.decisions.get(proposal_id)
+        return value if value is not None and value.user_id == user_id else None
+
+    def decide_starting_proposal(
+        self,
+        proposal: StartingCalorieProposal,
+        decision: StartingTargetDecision,
+        resulting_policy: TargetPolicyVersion | None,
+        target_decision_log: DecisionLogEntry | None,
+    ) -> tuple[StartingTargetDecision, bool]:
+        existing = self.decisions.get(proposal.proposal_id)
+        event = self._decision_events.get((proposal.user_id, decision.client_event_id))
+        if existing is not None:
+            if (
+                existing.decision == decision.decision
+                and existing.client_event_id == decision.client_event_id
+            ):
+                return existing, False
+            raise ValueError("starting target decision conflict")
+        if event is not None:
+            raise ValueError("starting target decision event conflict")
+        if resulting_policy is not None:
+            if self.target_repository is None or target_decision_log is None:
+                raise ValueError("target repository required for approval")
+            self.target_repository.save_approved(
+                resulting_policy,
+                target_decision_log.rationale,
+                target_decision_log.decided_at or decision.decided_at,
+            )
+        self.decisions[proposal.proposal_id] = decision
+        self._decision_events[(proposal.user_id, decision.client_event_id)] = proposal.proposal_id
+        return decision, True
 
 
 _TrainingIdentity = tuple[UUID, TrainingSourceSystem, str]
@@ -1134,6 +1226,9 @@ class InMemoryCustomFoodRepository(CustomFoodRepository):
     versions: dict[UUID, CustomFoodVersion] = field(default_factory=dict)
     foods: dict[UUID, UUID] = field(default_factory=dict)
     consumptions: dict[tuple[UUID, UUID], ManualFoodConsumptionEntry] = field(default_factory=dict)
+    adjustments: dict[tuple[UUID, UUID], ManualFoodConsumptionAdjustment] = field(
+        default_factory=dict
+    )
     sources: dict[tuple[UUID, str, str], UUID] = field(default_factory=dict)
 
     def save_version(self, version: CustomFoodVersion, *, create_identity: bool) -> None:
@@ -1201,6 +1296,78 @@ class InMemoryCustomFoodRepository(CustomFoodRepository):
             return RecordManualFoodOutcome(entry=original, created=False)
         self.consumptions[key] = entry
         return RecordManualFoodOutcome(entry=entry, created=True)
+
+    def find_active_consumption(
+        self, user_id: UUID, entry_id: UUID
+    ) -> ManualFoodConsumptionEntry | None:
+        superseded = {
+            value.superseded_entry_id
+            for value in self.adjustments.values()
+            if value.user_id == user_id
+        }
+        if entry_id in superseded:
+            return None
+        return next(
+            (
+                value
+                for value in self.consumptions.values()
+                if value.user_id == user_id and value.entry_id == entry_id
+            ),
+            None,
+        )
+
+    def find_consumption(self, user_id: UUID, entry_id: UUID) -> ManualFoodConsumptionEntry | None:
+        return next(
+            (
+                value
+                for value in self.consumptions.values()
+                if value.user_id == user_id and value.entry_id == entry_id
+            ),
+            None,
+        )
+
+    def save_adjustment(
+        self,
+        adjustment: ManualFoodConsumptionAdjustment,
+        replacement: ManualFoodConsumptionEntry | None,
+    ) -> AdjustManualFoodOutcome:
+        key = (adjustment.user_id, adjustment.client_event_id)
+        existing = self.adjustments.get(key)
+        if existing is not None:
+            existing_replacement = next(
+                (
+                    value
+                    for value in self.consumptions.values()
+                    if value.entry_id == existing.replacement_entry_id
+                ),
+                None,
+            )
+            same_request = (
+                existing.superseded_entry_id == adjustment.superseded_entry_id
+                and existing.kind is adjustment.kind
+                and (
+                    (existing_replacement is None and replacement is None)
+                    or (
+                        existing_replacement is not None
+                        and replacement is not None
+                        and existing_replacement.correction_facts()
+                        == replacement.correction_facts()
+                    )
+                )
+            )
+            if not same_request:
+                raise DuplicateManualFoodError("manual adjustment event conflicts")
+            return AdjustManualFoodOutcome(existing, existing_replacement, False)
+        if self.find_active_consumption(adjustment.user_id, adjustment.superseded_entry_id) is None:
+            raise LookupError("active manual consumption not found")
+        if adjustment.kind is ManualFoodAdjustmentKind.CORRECTION:
+            if replacement is None or replacement.entry_id != adjustment.replacement_entry_id:
+                raise ValueError("correction replacement mismatch")
+            self.consumptions[(replacement.user_id, replacement.client_event_id)] = replacement
+        elif replacement is not None:
+            raise ValueError("void cannot contain replacement")
+        self.adjustments[key] = adjustment
+        return AdjustManualFoodOutcome(adjustment, replacement, True)
 
 
 def _view_from_parts(

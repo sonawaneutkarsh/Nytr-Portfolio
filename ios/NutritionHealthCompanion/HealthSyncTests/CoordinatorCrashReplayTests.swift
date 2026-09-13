@@ -8,7 +8,7 @@ final class CoordinatorCrashReplayTests: XCTestCase {
     private func makeSample(_ n: Int) -> BodyMassSampleDTO {
         BodyMassSampleDTO(
             sampleUUID: UUID(uuidString: "00000000-0000-0000-0000-\(String(format: "%012x", n))")!,
-            valueKgDecimalString: "72.000",
+            valueKgDecimalString: "68.039",
             sampleStart: Date(timeIntervalSince1970: 1_760_000_000),
             sampleEnd: Date(timeIntervalSince1970: 1_760_000_000)
         )

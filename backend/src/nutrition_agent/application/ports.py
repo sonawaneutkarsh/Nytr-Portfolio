@@ -13,7 +13,12 @@ from types import MappingProxyType
 from typing import Protocol
 from uuid import UUID
 
-from nutrition_agent.domain.body_goals import OwnerBodyProfile, WaistMeasurement
+from nutrition_agent.domain.body_goals import (
+    BodyGoalProfileVersion,
+    StartingCalorieProposal,
+    StartingTargetDecision,
+    WaistMeasurement,
+)
 from nutrition_agent.domain.consumption import (
     ConsumptionEntry,
     RecordConsumptionOutcome,
@@ -31,7 +36,9 @@ from nutrition_agent.domain.next_meal_consumption import (
 )
 from nutrition_agent.domain.nutrition.barcodes import BarcodeProduct
 from nutrition_agent.domain.nutrition.custom_foods import (
+    AdjustManualFoodOutcome,
     CustomFoodVersion,
+    ManualFoodConsumptionAdjustment,
     ManualFoodConsumptionEntry,
     RecordManualFoodOutcome,
 )
@@ -492,20 +499,30 @@ class BodyMassHistoryRepository(Protocol):
         ...
 
 
-class BodyProfileRepository(Protocol):
-    """Owner profile data; profile updates are explicit owner actions."""
+class BodyGoalsRepository(Protocol):
+    """Append-only owner profile, waist, and starting-target lifecycle."""
 
-    def get(self, user_id: UUID) -> OwnerBodyProfile | None: ...
-
-    def save(self, profile: OwnerBodyProfile) -> None: ...
-
-
-class WaistMeasurementRepository(Protocol):
-    """Append-only owner-entered waist evidence."""
-
-    def append(self, measurement: WaistMeasurement) -> None: ...
-
-    def list_recent(self, user_id: UUID, limit: int = 30) -> tuple[WaistMeasurement, ...]: ...
+    def save_profile(self, profile: BodyGoalProfileVersion) -> BodyGoalProfileVersion: ...
+    def latest_profile(self, user_id: UUID) -> BodyGoalProfileVersion | None: ...
+    def save_waist(self, measurement: WaistMeasurement) -> None: ...
+    def list_active_waist(self, user_id: UUID) -> tuple[WaistMeasurement, ...]: ...
+    def save_starting_proposal(
+        self, proposal: StartingCalorieProposal
+    ) -> tuple[StartingCalorieProposal, bool]: ...
+    def latest_starting_proposal(self, user_id: UUID) -> StartingCalorieProposal | None: ...
+    def find_starting_proposal(
+        self, user_id: UUID, proposal_id: UUID
+    ) -> StartingCalorieProposal | None: ...
+    def find_starting_decision(
+        self, user_id: UUID, proposal_id: UUID
+    ) -> StartingTargetDecision | None: ...
+    def decide_starting_proposal(
+        self,
+        proposal: StartingCalorieProposal,
+        decision: StartingTargetDecision,
+        resulting_policy: TargetPolicyVersion | None,
+        target_decision_log: DecisionLogEntry | None,
+    ) -> tuple[StartingTargetDecision, bool]: ...
 
 
 class TrainingSessionRepository(Protocol):
@@ -728,6 +745,20 @@ class CustomFoodRepository(Protocol):
     ) -> CustomFoodVersion | None: ...
 
     def save_consumption(self, entry: ManualFoodConsumptionEntry) -> RecordManualFoodOutcome: ...
+
+    def find_active_consumption(
+        self, user_id: UUID, entry_id: UUID
+    ) -> ManualFoodConsumptionEntry | None: ...
+
+    def find_consumption(
+        self, user_id: UUID, entry_id: UUID
+    ) -> ManualFoodConsumptionEntry | None: ...
+
+    def save_adjustment(
+        self,
+        adjustment: ManualFoodConsumptionAdjustment,
+        replacement: ManualFoodConsumptionEntry | None,
+    ) -> AdjustManualFoodOutcome: ...
 
     def find_latest_by_source(
         self, user_id: UUID, source_system: str, source_key: str

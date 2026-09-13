@@ -92,6 +92,9 @@ def _item_content(item: ConsumedNutritionEvidence) -> dict[str, object]:
         ),
         "consumed_amount": _decimal(item.consumed_amount),
         "consumed_unit": item.consumed_unit,
+        "serving_description": item.serving_description,
+        "serving_amount": _decimal(item.serving_amount),
+        "serving_unit": item.serving_unit,
     }
 
 

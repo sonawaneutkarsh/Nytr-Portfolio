@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct CompanionApp: App {
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage(NytrAppearance.preferenceKey) private var appearance = NytrAppearance.system.rawValue
 
     @State private var viewModel: HealthSyncViewModel
     @State private var sessionViewModel: SessionViewModel
@@ -11,10 +12,11 @@ struct CompanionApp: App {
     @State private var nutritionHistoryViewModel: NutritionHistoryViewModel
     @State private var progressViewModel: ProgressViewModel
     @State private var targetReviewViewModel: TargetReviewViewModel
+    @State private var bodyGoalsViewModel: BodyGoalsViewModel
     @State private var manualFoodViewModel: ManualFoodViewModel
     @State private var trainingViewModel: TrainingViewModel
     @State private var aiReviewViewModel: AIReviewViewModel
-    @State private var bodyGoalsViewModel: BodyGoalsViewModel
+    @State private var notificationViewModel: MealGuidanceNotificationViewModel
     @State private var initialSessionCheckCompleted = false
 
     init() {
@@ -23,9 +25,11 @@ struct CompanionApp: App {
             (config.object(forInfoDictionaryKey: key) as? String) ?? ""
         }
         // Non-secret configuration from Config.xcconfig via Info.plist.
-        let backendBase = URL(string: cfg("BACKEND_BASE_URL"))
+        let backendBase =
+            URL(string: cfg("BACKEND_BASE_URL"))
             ?? URL(string: "https://localhost")!
-        let supabaseURL = URL(string: cfg("SUPABASE_URL"))
+        let supabaseURL =
+            URL(string: cfg("SUPABASE_URL"))
             ?? URL(string: "https://localhost")!
         let anonKey = cfg("SUPABASE_ANON_KEY")
 
@@ -51,6 +55,13 @@ struct CompanionApp: App {
         let sessionViewModel = SessionViewModel(auth: authSession)
         _sessionViewModel = State(initialValue: sessionViewModel)
         _signInViewModel = State(initialValue: SignInViewModel(requester: authSession))
+        let notificationViewModel = MealGuidanceNotificationViewModel()
+        _notificationViewModel = State(initialValue: notificationViewModel)
+        let aiReviewViewModel = AIReviewViewModel(
+            backend: client,
+            onUnauthorized: { sessionViewModel.signOut() }
+        )
+        _aiReviewViewModel = State(initialValue: aiReviewViewModel)
         let nutritionHistoryViewModel = NutritionHistoryViewModel(
             backend: client,
             onUnauthorized: { sessionViewModel.signOut() }
@@ -67,51 +78,71 @@ struct CompanionApp: App {
             onUnauthorized: { sessionViewModel.signOut() },
             onNextMealConsumptionRecorded: {
                 await nutritionHistoryViewModel.refresh()
-                await progressViewModel.refresh()
+            },
+            onNutritionRecorded: {
+                aiReviewViewModel.invalidateEvidenceAfterConsumption()
+            },
+            onPlanStateChanged: { plan, consumption, timezone in
+                await notificationViewModel.reconcile(
+                    plan: plan, consumption: consumption, timezone: timezone
+                )
             }
         )
         _todayViewModel = State(initialValue: todayViewModel)
-        _manualFoodViewModel = State(initialValue: ManualFoodViewModel(
-            backend: client,
-            onRecorded: {
-                await todayViewModel.refresh()
-                await nutritionHistoryViewModel.refresh()
-                await progressViewModel.refresh()
-            }
-        ))
-        _targetReviewViewModel = State(initialValue: TargetReviewViewModel(
+        _manualFoodViewModel = State(
+            initialValue: ManualFoodViewModel(
+                backend: client,
+                onRecorded: {
+                    aiReviewViewModel.invalidateEvidenceAfterConsumption()
+                    async let today: Void = todayViewModel.refreshNutrition()
+                    async let history: Void = nutritionHistoryViewModel.refresh()
+                    _ = await (today, history)
+                }
+            ))
+        let targetReviewViewModel = TargetReviewViewModel(
             backend: client,
             onUnauthorized: { sessionViewModel.signOut() },
             onProteinTargetApproved: {
                 await todayViewModel.refresh()
                 await progressViewModel.refresh()
             }
-        ))
-        _trainingViewModel = State(initialValue: TrainingViewModel(
+        )
+        _targetReviewViewModel = State(initialValue: targetReviewViewModel)
+        let bodyGoalsViewModel = BodyGoalsViewModel(
             backend: client,
-            onUnauthorized: { sessionViewModel.signOut() }
-        ))
-        _aiReviewViewModel = State(initialValue: AIReviewViewModel(
-            backend: client,
-            onUnauthorized: { sessionViewModel.signOut() }
-        ))
-        _bodyGoalsViewModel = State(initialValue: BodyGoalsViewModel(
-            backend: client,
-            onUnauthorized: { sessionViewModel.signOut() }
-        ))
-        _viewModel = State(initialValue: HealthSyncViewModel(
-            engine: engine,
-            workoutEngine: workoutEngine,
-            backend: client,
-            store: store,
-            workoutStore: workoutStore,
-            onSyncCompleted: {
-                Task {
-                    await todayViewModel.refresh()
-                    await progressViewModel.refresh()
-                }
+            onUnauthorized: { sessionViewModel.signOut() },
+            onTargetsChanged: {
+                await todayViewModel.refresh()
+                await progressViewModel.refresh()
+                await targetReviewViewModel.retryGoalLoad()
+                await targetReviewViewModel.retryProteinLoad()
             }
-        ))
+        )
+        _bodyGoalsViewModel = State(initialValue: bodyGoalsViewModel)
+        _trainingViewModel = State(
+            initialValue: TrainingViewModel(
+                backend: client,
+                onUnauthorized: { sessionViewModel.signOut() }
+            ))
+        _viewModel = State(
+            initialValue: HealthSyncViewModel(
+                engine: engine,
+                workoutEngine: workoutEngine,
+                backend: client,
+                store: store,
+                workoutStore: workoutStore,
+                onSyncCompleted: {
+                    Task {
+                        await todayViewModel.refresh()
+                        await progressViewModel.refresh()
+                        await bodyGoalsViewModel.refresh()
+                    }
+                }
+            ))
+
+        #if canImport(UserNotifications)
+            NytrNotificationDelegate.shared.install()
+        #endif
 
         // Best-effort observer + background delivery registration at launch
         // (plan §9). Correctness never depends on these firing.
@@ -137,10 +168,15 @@ struct CompanionApp: App {
                 nutritionHistoryViewModel: nutritionHistoryViewModel,
                 progressViewModel: progressViewModel,
                 targetReviewViewModel: targetReviewViewModel,
+                bodyGoalsViewModel: bodyGoalsViewModel,
                 manualFoodViewModel: manualFoodViewModel,
                 trainingViewModel: trainingViewModel,
                 aiReviewViewModel: aiReviewViewModel,
-                bodyGoalsViewModel: bodyGoalsViewModel
+                notificationViewModel: notificationViewModel,
+                appearance: NytrAppearance.binding($appearance)
+            )
+            .preferredColorScheme(
+                (NytrAppearance(rawValue: appearance) ?? .system).colorScheme
             )
             .task {
                 guard !initialSessionCheckCompleted else { return }
@@ -153,15 +189,27 @@ struct CompanionApp: App {
                     await viewModel.syncNow()
                 }
             }
-            .onOpenURL { url in sessionViewModel.handleOpenURL(url) }
+            .onOpenURL { url in
+                if MealGuidanceDeepLink.destination(from: url) == nil {
+                    sessionViewModel.handleOpenURL(url)
+                }
+            }
+            .onChange(of: sessionViewModel.phase) { _, phase in
+                if phase == .signedOut {
+                    notificationViewModel.resetForSignOut()
+                }
+            }
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active,
-               initialSessionCheckCompleted,
-               sessionViewModel.shouldStartForegroundSync()
+                initialSessionCheckCompleted,
+                sessionViewModel.shouldStartForegroundSync()
             {
                 // Reliable foreground catch-up when stale (plan §4).
-                Task { await viewModel.syncNow() }
+                Task {
+                    await notificationViewModel.refreshPermission()
+                    await viewModel.syncNow()
+                }
             } else if newPhase != .active {
                 sessionViewModel.sceneDidLeaveActiveState()
             }
@@ -177,10 +225,17 @@ struct RootView: View {
     let nutritionHistoryViewModel: NutritionHistoryViewModel
     let progressViewModel: ProgressViewModel
     let targetReviewViewModel: TargetReviewViewModel
+    let bodyGoalsViewModel: BodyGoalsViewModel
     let manualFoodViewModel: ManualFoodViewModel
     let trainingViewModel: TrainingViewModel
     let aiReviewViewModel: AIReviewViewModel
-    let bodyGoalsViewModel: BodyGoalsViewModel
+    let notificationViewModel: MealGuidanceNotificationViewModel
+    @Binding var appearance: NytrAppearance
+    @State private var selectedTab = RootTab.today
+    @State private var focusedMeal: MealGuidanceKind?
+    @State private var showingSettings = false
+
+    private enum RootTab: Hashable { case today, food, training, progress }
 
     var body: some View {
         switch sessionViewModel.phase {
@@ -192,15 +247,16 @@ struct RootView: View {
                 callbackError: sessionViewModel.callbackError
             )
         case .signedIn(let subject):
-            TabView {
+            TabView(selection: $selectedTab) {
                 TodayView(
                     viewModel: todayViewModel,
                     nutritionHistoryViewModel: nutritionHistoryViewModel,
                     progressViewModel: progressViewModel,
                     targetReviewViewModel: targetReviewViewModel,
+                    bodyGoalsViewModel: bodyGoalsViewModel,
                     manualFoodViewModel: manualFoodViewModel,
                     aiReviewViewModel: aiReviewViewModel,
-                    bodyGoalsViewModel: bodyGoalsViewModel,
+                    notificationViewModel: notificationViewModel,
                     healthSyncViewModel: viewModel,
                     subject: subject,
                     onSignOut: {
@@ -209,22 +265,113 @@ struct RootView: View {
                             nutritionHistoryViewModel.resetForSignOut()
                             progressViewModel.resetForSignOut()
                             targetReviewViewModel.resetForSignOut()
+                            bodyGoalsViewModel.resetForSignOut()
                             trainingViewModel.resetForSignOut()
                             manualFoodViewModel.resetForSignOut()
                             aiReviewViewModel.resetForSignOut()
-                            bodyGoalsViewModel.resetForSignOut()
+                            notificationViewModel.resetForSignOut()
                         }
-                    }
+                    },
+                    onShowSettings: { showingSettings = true }
                 )
                 .tabItem {
                     Label("Today", systemImage: "sun.max")
                 }
+                .tag(RootTab.today)
 
-                TrainingView(viewModel: trainingViewModel, subject: subject)
+                NavigationStack {
+                    ManualFoodView(
+                        viewModel: manualFoodViewModel,
+                        todayViewModel: todayViewModel,
+                        nutritionHistoryViewModel: nutritionHistoryViewModel,
+                        subject: subject,
+                        focusedMeal: focusedMeal,
+                        onShowSettings: { showingSettings = true }
+                    )
+                }
+                    .tabItem { Label("Food", systemImage: "fork.knife") }
+                    .tag(RootTab.food)
+
+                TrainingView(
+                    viewModel: trainingViewModel, subject: subject,
+                    onShowSettings: { showingSettings = true }
+                )
                     .tabItem {
                         Label("Training", systemImage: "figure.strengthtraining.traditional")
                     }
+                    .tag(RootTab.training)
+                NavigationStack {
+                    OwnerProgressView(
+                        viewModel: progressViewModel, bodyGoalsViewModel: bodyGoalsViewModel,
+                        targetReviewViewModel: targetReviewViewModel, subject: subject,
+                        onShowSettings: { showingSettings = true })
+                }.tabItem { Label("Progress", systemImage: "chart.xyaxis.line") }
+                    .tag(RootTab.progress)
             }
+            .tint(NytrDesign.accent)
+            .sheet(isPresented: $showingSettings) {
+                NavigationStack {
+                    SettingsView(
+                        appearance: $appearance,
+                        healthSyncViewModel: viewModel,
+                        notificationViewModel: notificationViewModel,
+                        onSignOut: onSignOutFromSettings
+                    )
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showingSettings = false }
+                        }
+                    }
+                }
+                // A sheet is hosted in its own presentation context, so the app
+                // root's preferredColorScheme only styles the window behind it
+                // and an already-presented Settings hierarchy keeps the scheme it
+                // was presented with. Deriving the same scheme from the same
+                // binding here recolors the open sheet, its Form surfaces, its
+                // navigation bar, and anything it pushes on the first tap.
+                // This reads the single persisted preference; it does not own it.
+                .preferredColorScheme(appearance.colorScheme)
+            }
+            .onOpenURL(perform: openMealLink)
+            .onReceive(NotificationCenter.default.publisher(for: .nytrMealNotificationOpened)) {
+                notification in
+                #if canImport(UserNotifications)
+                    let url = NytrNotificationDelegate.shared.takePendingDeepLink()
+                        ?? notification.object as? URL
+                #else
+                    let url = notification.object as? URL
+                #endif
+                guard let url else { return }
+                openMealLink(url)
+            }
+            .task(id: subject) {
+                #if canImport(UserNotifications)
+                    if let url = NytrNotificationDelegate.shared.takePendingDeepLink() {
+                        openMealLink(url)
+                    }
+                #endif
+            }
+        }
+    }
+
+    private func openMealLink(_ url: URL) {
+        guard let meal = MealGuidanceDeepLink.destination(from: url) else { return }
+        focusedMeal = meal
+        selectedTab = .food
+    }
+
+    private func onSignOutFromSettings() {
+        showingSettings = false
+        sessionViewModel.signOut {
+            todayViewModel.clearForSignOut()
+            nutritionHistoryViewModel.resetForSignOut()
+            progressViewModel.resetForSignOut()
+            targetReviewViewModel.resetForSignOut()
+            bodyGoalsViewModel.resetForSignOut()
+            trainingViewModel.resetForSignOut()
+            manualFoodViewModel.resetForSignOut()
+            aiReviewViewModel.resetForSignOut()
+            notificationViewModel.resetForSignOut()
         }
     }
 }

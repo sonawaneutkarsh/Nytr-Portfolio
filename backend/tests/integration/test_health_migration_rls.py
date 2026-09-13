@@ -64,7 +64,7 @@ def _cleanup() -> None:
         conn.commit()
 
 
-def _sample(uuid_int: int = 1, value: str = "72.000") -> BodyMassSample:
+def _sample(uuid_int: int = 1, value: str = "68.039") -> BodyMassSample:
     return BodyMassSample(
         sample_uuid=UUID(int=uuid_int),
         value_kg=Decimal(value),
@@ -166,7 +166,7 @@ def test_check_constraints_enforce_tombstone_shape() -> None:
     assert _insert(
         "INSERT INTO health_body_mass_sample (id, user_id, hk_sample_uuid,"
         " value_kg, sample_start, sample_end) VALUES (%s, %s,"
-        " '00000000-0000-0000-0000-00000000c004', 72.000,"
+        " '00000000-0000-0000-0000-00000000c004', 68.039,"
         " '2026-08-21T07:00:00Z', '2026-08-21T07:00:00Z')",
         (owner,),
     )
@@ -251,7 +251,7 @@ def test_sql_repo_status_summary_aggregates() -> None:
     assert status.tombstone_count == 0
     assert status.latest_sample is not None
     assert status.latest_sample.sample_uuid == UUID(int=2)
-    assert str(status.latest_sample.value_kg) == "72.000"
+    assert str(status.latest_sample.value_kg) == "68.039"
     assert status.last_ingested_at is not None
 
 

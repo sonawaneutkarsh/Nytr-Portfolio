@@ -17,6 +17,7 @@ from nutrition_agent.application.ai_review import (
     AIReviewProviderFailure,
     GenerateAIReviewUseCase,
     build_ai_review_snapshot,
+    recorded_nutrition_evidence_category,
 )
 from nutrition_agent.domain.ai_review import AIReviewContent, AIReviewFailureCode, AIReviewStatus
 from nutrition_agent.domain.health.trend import BodyMassTrendStatus
@@ -125,11 +126,9 @@ def test_snapshot_is_bounded_and_excludes_raw_identifiers_and_untrusted_strings(
     document = _snapshot().provider_document()
     encoded = json.dumps(document, sort_keys=True)
 
-    assert document["snapshot_version"] == "owner-ai-review-snapshot.v1"
+    assert document["snapshot_version"] == "owner-ai-review-snapshot.v2"
     assert set(document) == {
         "snapshot_version",
-        "as_of_date",
-        "timezone",
         "goal",
         "targets",
         "today_recorded",
@@ -152,6 +151,8 @@ def test_snapshot_is_bounded_and_excludes_raw_identifiers_and_untrusted_strings(
         "source_bundle",
     ):
         assert forbidden not in encoded
+    for sensitive_numeric in ("67.4", "2450", "128", "2026-09-08"):
+        assert sensitive_numeric not in encoded
 
 
 def test_snapshot_preserves_missing_and_deterministic_unavailable_states() -> None:
@@ -169,8 +170,8 @@ def test_snapshot_preserves_missing_and_deterministic_unavailable_states() -> No
     document = snapshot.provider_document()
 
     assert document["goal"] == {"mode": None, "band_status": "unavailable"}
-    assert document["targets"]["calories_kcal"] is None  # type: ignore[index]
-    assert document["today_recorded"]["protein_g"] is None  # type: ignore[index]
+    assert document["targets"]["calorie_target_available"] is False  # type: ignore[index]
+    assert document["today_recorded"]["protein_available"] is False  # type: ignore[index]
     assert document["body_trend"]["status"] == "no_data"  # type: ignore[index]
     assert document["next_meal"]["status"] == "not_generated"  # type: ignore[index]
 
@@ -228,6 +229,7 @@ def test_valid_provider_response_is_explanatory_only() -> None:
 @pytest.mark.parametrize(
     ("failure", "code"),
     (
+        (AIReviewProviderFailure.PRIVACY_DISABLED, AIReviewFailureCode.PRIVACY_DISABLED),
         (AIReviewProviderFailure.NOT_CONFIGURED, AIReviewFailureCode.NOT_CONFIGURED),
         (AIReviewProviderFailure.TIMEOUT, AIReviewFailureCode.TIMEOUT),
         (AIReviewProviderFailure.RATE_LIMITED, AIReviewFailureCode.RATE_LIMITED),
@@ -272,3 +274,57 @@ def test_provider_content_rejects_numbers_and_oversized_or_missing_limit_state()
             ("C" * 220,),
             ("D" * 220,),
         )
+
+
+def test_snapshot_read_cannot_call_provider() -> None:
+    ledger, progress, next_meal = _inputs()
+
+    class Read:
+        def __init__(self, value):
+            self.value = value
+
+        def execute(self, **kwargs):
+            return self.value
+
+        def latest(self, user_id):
+            return self.value
+
+    class ForbiddenProvider:
+        def generate(self, snapshot):
+            raise AssertionError("Provider must never be called")
+
+    use = GenerateAIReviewUseCase(
+        Read(ledger), Read(progress), Read(next_meal), ForbiddenProvider()
+    )
+    snapshot = use.snapshot(user_id=USER, as_of_date=TODAY, timezone="UTC")
+    assert snapshot == _snapshot()
+
+
+def test_recorded_nutrition_category_distinguishes_consumption_from_completeness() -> None:
+    snapshot = _snapshot()
+    assert recorded_nutrition_evidence_category(snapshot) == "recorded_partial"
+    assert (
+        recorded_nutrition_evidence_category(
+            replace(
+                snapshot, recorded_item_count_today=0, recorded_nutrition_completeness="unavailable"
+            )
+        )
+        == "none"
+    )
+    assert (
+        recorded_nutrition_evidence_category(
+            replace(snapshot, recorded_nutrition_completeness="complete")
+        )
+        == "recorded_complete"
+    )
+    assert (
+        recorded_nutrition_evidence_category(
+            replace(
+                snapshot,
+                recorded_nutrition_completeness="unavailable",
+                recorded_calories_today_kcal=None,
+                recorded_protein_today_g=None,
+            )
+        )
+        == "recorded_partial"
+    )

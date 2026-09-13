@@ -28,6 +28,7 @@ class HealthApiSettings:
         repr=False,
     )  # backend-only; never returned, logged, persisted, or sent to iOS
     gemini_model: str = "gemini-2.5-flash"
+    gemini_ai_review_enabled: bool = False
     open_food_facts_user_agent: str | None = field(default=None, repr=False)
 
     @classmethod
@@ -41,5 +42,7 @@ class HealthApiSettings:
             hevy_api_key=env.get("HEVY_API_KEY") or None,
             gemini_api_key=env.get("GEMINI_API_KEY") or None,
             gemini_model=env.get("GEMINI_MODEL", "gemini-2.5-flash"),
+            gemini_ai_review_enabled=env.get("GEMINI_AI_REVIEW_ENABLED", "false").lower()
+            in {"1", "true", "yes"},
             open_food_facts_user_agent=env.get("OPEN_FOOD_FACTS_USER_AGENT") or None,
         )

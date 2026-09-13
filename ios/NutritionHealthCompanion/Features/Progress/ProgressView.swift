@@ -3,15 +3,34 @@ import SwiftUI
 
 struct OwnerProgressView: View {
     @State private var viewModel: ProgressViewModel
+    @State private var bodyGoalsViewModel: BodyGoalsViewModel
     let subject: String
+    let targetReviewViewModel: TargetReviewViewModel
+    let onShowSettings: () -> Void
 
-    init(viewModel: ProgressViewModel, subject: String) {
+    init(
+        viewModel: ProgressViewModel, bodyGoalsViewModel: BodyGoalsViewModel,
+        targetReviewViewModel: TargetReviewViewModel, subject: String,
+        onShowSettings: @escaping () -> Void = {}
+    ) {
         _viewModel = State(initialValue: viewModel)
+        _bodyGoalsViewModel = State(initialValue: bodyGoalsViewModel)
         self.subject = subject
+        self.targetReviewViewModel = targetReviewViewModel
+        self.onShowSettings = onShowSettings
     }
 
     var body: some View {
         List {
+            Section {
+                NytrScreenHeader(
+                    eyebrow: "PROGRESS", title: "See the longer view",
+                    subtitle: "Trends grounded in the days you have recorded.", symbol: "chart.xyaxis.line")
+                NavigationLink("Body & Goals") {
+                    BodyGoalsView(
+                        viewModel: bodyGoalsViewModel, targetReviewViewModel: targetReviewViewModel, subject: subject)
+                }
+            }.listRowBackground(Color.clear)
             switch viewModel.phase {
             case .idle, .loading:
                 ProgressView("Loading progress…")
@@ -19,20 +38,64 @@ struct OwnerProgressView: View {
                 Section {
                     Label(message, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
-                    Button("Try Again") { Task { await viewModel.refresh() } }
+                    Button("Try Again") { Task { await refresh() } }
                 }
             case .signedOut:
                 Text("Sign in to view progress.")
                     .foregroundStyle(.secondary)
             case .result(let response):
                 weightSection(response)
+                bodyEvidenceSections
                 nutritionSection(response)
                 limitationsSection(response.limitations)
             }
         }
+        .nytrList()
         .navigationTitle("Progress")
-        .refreshable { await viewModel.refresh() }
-        .task(id: subject) { await viewModel.activate(subject: subject) }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                NytrSettingsToolbarButton(action: onShowSettings)
+            }
+        }
+        .refreshable { await refresh() }
+        .task(id: subject) {
+            async let progress: Void = viewModel.activate(subject: subject)
+            async let body: Void = bodyGoalsViewModel.activate(subject: subject)
+            _ = await (progress, body)
+        }
+    }
+
+    private func refresh() async {
+        async let progress: Void = viewModel.refresh()
+        async let body: Void = bodyGoalsViewModel.refresh()
+        _ = await (progress, body)
+    }
+
+    @ViewBuilder
+    private var bodyEvidenceSections: some View {
+        switch bodyGoalsViewModel.phase {
+        case .loading:
+            Section { ProgressView("Loading waist and phase…") }
+        case .error(let message):
+            Section("Waist & phase") {
+                NytrStatusLabel(title: message, systemImage: "exclamationmark.triangle")
+                Button("Try again") { Task { await bodyGoalsViewModel.refresh() } }
+            }
+        case .signedOut:
+            Section { Text("Sign in to view waist and phase evidence.") }
+        case .ready(let response):
+            Section("Waist trend") {
+                if let latest = response.waist.latest {
+                    NytrMetricRow(
+                        "Latest",
+                        value: "\(NytrNumberFormat.detail(latest.valueCm) ?? latest.valueCm) cm"
+                    )
+                    NytrMetricRow("Measured", value: latest.measuredAt.formatted(date: .abbreviated, time: .omitted))
+                }
+                NytrWaistTrend(trend: response.waist.trend)
+            }
+            NytrPhaseAssessmentSection(assessment: response.phaseAssessment)
+        }
     }
 
     @ViewBuilder
@@ -49,38 +112,46 @@ struct OwnerProgressView: View {
                 Text("No body-weight measurements in this window.")
                     .foregroundStyle(.secondary)
             } else {
-                Chart {
-                    ForEach(Array(viewModel.bodyChartSegments.enumerated()), id: \.offset) {
-                        segmentIndex, segment in
-                        if segment.count > 1 {
-                            ForEach(segment) { point in
-                                LineMark(
-                                    x: .value("Date", point.date),
-                                    y: .value("Daily median (kg)", point.displayKg),
-                                    series: .value("Segment", segmentIndex)
-                                )
+                if viewModel.selectedBodyPoints.count > 1 {
+                    Chart {
+                        ForEach(Array(viewModel.bodyChartSegments.enumerated()), id: \.offset) {
+                            segmentIndex, segment in
+                            if segment.count > 1 {
+                                ForEach(segment) { point in
+                                    LineMark(
+                                        x: .value("Date", point.date),
+                                        y: .value("Daily median (kg)", point.displayKg),
+                                        series: .value("Segment", segmentIndex)
+                                    )
+                                }
                             }
                         }
+                        ForEach(viewModel.selectedBodyPoints) { point in
+                            PointMark(
+                                x: .value("Date", point.date),
+                                y: .value("Daily median (kg)", point.displayKg)
+                            )
+                            .accessibilityLabel("\(point.localDate) daily median")
+                            .accessibilityValue("\(point.medianKg) kilograms")
+                        }
                     }
-                    ForEach(viewModel.selectedBodyPoints) { point in
-                        PointMark(
-                            x: .value("Date", point.date),
-                            y: .value("Daily median (kg)", point.displayKg)
-                        )
-                        .accessibilityLabel("\(point.localDate) daily median")
-                        .accessibilityValue("\(point.medianKg) kilograms")
-                    }
+                    .frame(height: 190)
+                    .chartYAxisLabel("kg")
+                    .chartYScale(domain: .automatic(includesZero: false))
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Body-weight trend chart")
+                    .accessibilityValue(
+                        "\(viewModel.selectedBodyPoints.count) represented days; missing days are gaps"
+                    )
+                } else {
+                    NytrStateView(
+                        title: "A starting point",
+                        message: "One recorded day is available. More measurements are needed to show a trend.",
+                        symbol: "chart.xyaxis.line")
                 }
-                .frame(height: 190)
-                .chartYAxisLabel("kg")
-                .accessibilityElement(children: .contain)
-                .accessibilityLabel("Body-weight trend chart")
-                .accessibilityValue(
-                    "\(viewModel.selectedBodyPoints.count) represented days; missing days are gaps"
-                )
 
                 if let latest = viewModel.selectedBodyPoints.last {
-                    LabeledContent("Latest in window", value: "\(latest.medianKg) kg")
+                    NytrMetricRow("Latest in window", value: "\(latest.medianKg) kg")
                     if latest.observationCount > 1 {
                         Text("Daily median of \(latest.observationCount) measurements")
                             .font(.caption)
@@ -99,16 +170,16 @@ struct OwnerProgressView: View {
 
     @ViewBuilder
     private func trendDetails(_ trend: BodyMassTrendResponse) -> some View {
-        LabeledContent("28-day represented days", value: String(trend.representedDayCount))
-        LabeledContent("28-day coverage span", value: "\(trend.coverageSpanDays) days")
+        NytrMetricRow("Measurement days", value: String(trend.representedDayCount))
+        NytrMetricRow("Measurement span", value: "\(trend.coverageSpanDays) days")
         if let age = trend.latestMeasurementAgeDays {
-            LabeledContent("Latest measurement age", value: "\(age) days")
+            NytrMetricRow("Latest measurement age", value: "\(age) days")
         }
         if let average = trend.formattedTrailingAverageKg {
-            LabeledContent("Existing 7-day average", value: "\(average) kg")
+            NytrMetricRow("7-day average", value: "\(average) kg")
         }
         if let rate = trend.formattedWeeklyRateKg {
-            LabeledContent("Existing 28-day trend", value: "\(rate) kg/week")
+            NytrMetricRow("28-day trend", value: "\(rate) kg/week")
         }
         switch trend.status {
         case .ready:
@@ -126,14 +197,14 @@ struct OwnerProgressView: View {
     @ViewBuilder
     private func goalDetails(_ goal: ProgressGoalResponse) -> some View {
         if let mode = goal.mode {
-            LabeledContent("Current goal", value: mode.rawValue.capitalized)
+            NytrMetricRow("Current goal", value: mode.rawValue.capitalized)
         } else {
-            LabeledContent("Current goal", value: "Unavailable")
+            NytrMetricRow("Current goal", value: "Unavailable")
         }
         if let desired = goal.desiredRateKgPerWeek {
-            LabeledContent("Desired rate", value: "\(desired) kg/week")
+            NytrMetricRow("Desired rate", value: "\(desired) kg/week")
         }
-        LabeledContent("Goal-band interpretation", value: goalBandLabel(goal.status))
+        NytrMetricRow("Progress toward goal", value: goalBandLabel(goal.status))
     }
 
     @ViewBuilder
@@ -147,11 +218,11 @@ struct OwnerProgressView: View {
             .pickerStyle(.segmented)
 
             if let summary = viewModel.selectedSummary {
-                LabeledContent(
+                NytrMetricRow(
                     "Days with records",
                     value: "\(summary.coverage.daysWithRecordedEvents) / \(summary.windowDays)"
                 )
-                LabeledContent(
+                NytrMetricRow(
                     "Average recorded calories",
                     value: average(
                         summary.recordedCalories.averageRecordedKcal,
@@ -159,7 +230,7 @@ struct OwnerProgressView: View {
                         denominator: summary.recordedCalories.averageDenominatorDays
                     )
                 )
-                LabeledContent(
+                NytrMetricRow(
                     "Average recorded protein",
                     value: average(
                         summary.recordedProtein.averageRecordedG,
@@ -167,7 +238,7 @@ struct OwnerProgressView: View {
                         denominator: summary.recordedProtein.averageDenominatorDays
                     )
                 )
-                LabeledContent(
+                NytrMetricRow(
                     "Calorie evidence",
                     value: evidenceCounts(
                         quantified: summary.recordedCalories.quantifiedRecordedDays,
@@ -175,7 +246,7 @@ struct OwnerProgressView: View {
                         unavailable: summary.recordedCalories.unavailableRecordedDays
                     )
                 )
-                LabeledContent(
+                NytrMetricRow(
                     "Protein evidence",
                     value: evidenceCounts(
                         quantified: summary.recordedProtein.quantifiedRecordedDays,
@@ -183,12 +254,12 @@ struct OwnerProgressView: View {
                         unavailable: summary.recordedProtein.unavailableRecordedDays
                     )
                 )
-                LabeledContent(
-                    "Calorie recorded-total comparison",
+                NytrMetricRow(
+                    "Calories vs target",
                     value: calorieComparisons(summary.recordedCalorieTargetComparisons)
                 )
-                LabeledContent(
-                    "Protein recorded-total comparison",
+                NytrMetricRow(
+                    "Protein vs minimum",
                     value: proteinComparisons(summary.recordedProteinTargetComparisons)
                 )
 
@@ -226,9 +297,11 @@ struct OwnerProgressView: View {
 
     private func limitationsSection(_ limitations: ProgressLimitations) -> some View {
         Section("About these summaries") {
-            Text(limitations.loggingCoverage)
-            Text(limitations.recordTimeAttribution)
-            Text(limitations.causality)
+            DisclosureGroup("Evidence & limitations") {
+                Text(limitations.loggingCoverage)
+                Text(limitations.recordTimeAttribution)
+                Text(limitations.causality)
+            }
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -236,7 +309,7 @@ struct OwnerProgressView: View {
 
     private func average(_ value: String?, unit: String, denominator: Int) -> String {
         guard let value else { return "Unavailable (0 quantified days)" }
-        return "\(value) \(unit) across \(denominator) quantified days"
+        return "\(NytrNumberFormat.whole(value) ?? value) \(unit) across \(denominator) quantified days"
     }
 
     private func evidenceCounts(quantified: Int, partial: Int, unavailable: Int) -> String {
@@ -256,17 +329,21 @@ struct OwnerProgressView: View {
     }
 
     private func targetChangeDetails(_ value: ProgressTargetChange) -> String {
-        let calories = value.caloriesKcal.map { "\($0) kcal" } ?? "calories unavailable"
-        let protein = value.proteinG.map { "\($0) g protein" } ?? "protein unavailable"
-        return "\(value.targetPolicyVersion): \(calories), \(protein)"
+        let calories = value.caloriesKcal.map {
+            "\(NytrNumberFormat.whole($0) ?? $0) kcal"
+        } ?? "calories unavailable"
+        let protein = value.proteinG.map {
+            "\(NytrNumberFormat.whole($0) ?? $0) g protein"
+        } ?? "protein unavailable"
+        return "\(calories), \(protein)"
     }
 
     private func goalBandLabel(_ value: ProgressGoalBandStatus) -> String {
         switch value {
         case .unavailable: "Unavailable"
-        case .belowBand: "Below configured band"
-        case .withinBand: "Within configured band"
-        case .aboveBand: "Above configured band"
+        case .belowBand: "Below goal range"
+        case .withinBand: "Within goal range"
+        case .aboveBand: "Above goal range"
         }
     }
 }

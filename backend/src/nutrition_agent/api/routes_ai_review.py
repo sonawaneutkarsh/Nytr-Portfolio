@@ -68,12 +68,39 @@ def generate_current_review(
     return JSONResponse(status_code=200, content=_content(result))
 
 
+@router.get("/snapshot")
+def current_snapshot(
+    as_of_date: date,
+    timezone: str,
+    verifier: VerifierDep,
+    use_case: AIReviewDep,
+    authorization: Annotated[str | None, Header()] = None,
+) -> Response:
+    """Owner evidence only: there is no call path to a server AI provider."""
+    subject = _authenticated_subject(verifier, authorization)
+    if isinstance(subject, JSONResponse):
+        return subject
+    try:
+        snapshot = use_case.snapshot(user_id=subject, as_of_date=as_of_date, timezone=timezone)
+    except ValueError:
+        return _error(400, "invalid_review_request", "Check the date and timezone")
+    except Exception:
+        return _error(503, "storage_unavailable", "Review evidence is temporarily unavailable")
+    return JSONResponse(
+        content={
+            "snapshot": snapshot.client_document(),
+            "model_input": snapshot.on_device_document(),
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 def _content(result: AIReviewResult) -> dict[str, object]:
     review = result.review
     return {
         "status": result.status.value,
         "prompt_version": AI_REVIEW_PROMPT_VERSION,
-        "snapshot": result.snapshot.provider_document(),
+        "snapshot": result.snapshot.client_document(),
         "review": (
             {
                 "summary": review.summary,

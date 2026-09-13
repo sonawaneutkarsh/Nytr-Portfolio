@@ -1,10 +1,13 @@
-"""Offline acceptance proof reconstructed from the retained M8 live page."""
+"""Offline acceptance proof over a provider-shaped multi-offering page."""
 
 from __future__ import annotations
 
+import os
 from collections import Counter
 from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from nutrition_agent.application.ingest_stacks import IngestStacksUseCase
 from nutrition_agent.application.ports import IngestCommand
@@ -20,6 +23,16 @@ from tests.retained_live_fixtures import (
     FETCHED_AT,
     SERVICE_DATE,
     RetainedLiveFixtureSource,
+)
+
+# The public mirror ships only minimal fabricated dining fixtures, so this
+# multi-offering acceptance proof cannot be reconstructed from them. Point
+# STACKS_INSTITUTIONAL_FIXTURES at a directory of provider-shaped pages to run
+# it locally.
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("STACKS_INSTITUTIONAL_FIXTURES"),
+    reason="STACKS_INSTITUTIONAL_FIXTURES not configured; "
+    "public fixtures are minimal fabricated parser cases",
 )
 
 

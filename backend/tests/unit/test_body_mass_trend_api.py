@@ -244,7 +244,7 @@ def test_get_is_repeatable_and_does_not_write_or_log_health_values(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     client, repo = _harness()
-    _seed(repo, USER_A, (_sample(1, AS_OF, "72.000"),))
+    _seed(repo, USER_A, (_sample(1, AS_OF, "68.039"),))
     before = dict(repo.rows)
 
     with caplog.at_level(logging.INFO, logger="nutrition_agent.health_api"):
@@ -254,4 +254,4 @@ def test_get_is_repeatable_and_does_not_write_or_log_health_values(
     assert first.json() == second.json()
     assert repo.rows == before
     joined = "\n".join(record.getMessage() for record in caplog.records)
-    assert "72.000" not in joined
+    assert "68.039" not in joined
